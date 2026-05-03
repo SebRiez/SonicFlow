@@ -1,5 +1,5 @@
 import { FFT, applyHanningWindow } from './fft.js';
-// AudioLookUp – Frontend Logic (Tauri v2)
+// SonicFlow – Frontend Logic (Tauri v2)
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { open } = window.__TAURI__.dialog;
 const { open: openPath } = window.__TAURI__.shell;

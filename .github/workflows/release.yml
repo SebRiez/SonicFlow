@@ -67,22 +67,22 @@ jobs:
 
       # 7. Run the Tauri build
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
-          releaseName: 'AudioLookUp ${{ github.ref_name }}'
+          releaseName: 'SonicFlow ${{ github.ref_name }}'
           releaseBody: |
-            ## AudioLookUp ${{ github.ref_name }}
+            ## SonicFlow ${{ github.ref_name }}
 
             ### Downloads
-            - **macOS** (Apple Silicon + Intel Universal): `AudioLookUp_*_universal.dmg`
-            - **Windows** (x64): `AudioLookUp_*_x64_en-US.msi`
+            - **macOS** (Universal): `.dmg` (Apple Silicon + Intel)
+            - **Windows** (x64): `.msi` (Professional Installer) oder `.exe` (Standard Installer)
 
             ### Installation
             - **macOS**: DMG öffnen → App in Programme-Ordner ziehen
-            - **Windows**: MSI-Installer ausführen
+            - **Windows**: MSI oder EXE ausführen
           releaseDraft: true      # Creates a Draft release (you publish manually)
           prerelease: false

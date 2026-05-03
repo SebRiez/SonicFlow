@@ -1,7 +1,7 @@
 [package]
-name = "audio-lookup"
+name = "sonic-flow"
 version = "0.1.0"
-description = "AudioLookUp – Sound Effect Database"
+description = "SonicFlow – Sound Effect Database"
 authors = ["Antigravity"]
 edition = "2021"
 
