@@ -8,6 +8,10 @@ on:
       - 'v*'
   workflow_dispatch:   # Manual trigger via GitHub UI
 
+permissions:
+  contents: write      # Needed to create/upload releases
+  pull-requests: write # Optional but good for automation
+
 jobs:
   build:
     strategy:
