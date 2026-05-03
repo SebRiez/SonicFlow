@@ -83,10 +83,31 @@ jobs:
 
             ### Downloads
             - **macOS** (Universal): `.dmg` (Apple Silicon + Intel)
-            - **Windows** (x64): `.msi` (Professional Installer) oder `.exe` (Standard Installer)
+            - **Windows** (x64): `.msi` (Professional Installer), `.exe` (Standard Installer) oder `.zip` (Portable Version)
 
             ### Installation
-            - **macOS**: DMG öffnen → App in Programme-Ordner ziehen
-            - **Windows**: MSI oder EXE ausführen
-          releaseDraft: true      # Creates a Draft release (you publish manually)
+            - **macOS**: DMG öffnen → App in Programme-Ordner ziehen.
+              *Hinweis: Beim ersten Start Rechtsklick -> Öffnen wählen.*
+            - **Windows**: MSI oder EXE ausführen, oder ZIP entpacken und `sonic-flow.exe` starten.
+          releaseDraft: true
           prerelease: false
+          includeReleaseAssets: 'SonicFlow_Portable_x64.zip'
+
+      # 8. Create Portable Zip (Windows only) - Run AFTER build so binary exists
+      # Note: We do this only if the previous step succeeded and we are on Windows
+      - name: Package Portable Zip
+        if: matrix.platform == 'windows-latest'
+        run: |
+          cd src-tauri/target/x86_64-pc-windows-msvc/release
+          7z a ../../../../SonicFlow_Portable_x64.zip sonic-flow.exe
+        shell: bash
+
+      # 9. Upload Portable Zip manually (since tauri-action finished)
+      - name: Upload Portable Asset
+        if: matrix.platform == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SonicFlow_Portable_x64.zip
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

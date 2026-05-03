@@ -10,6 +10,15 @@ SonicFlow is a high-performance sound effect database manager built with Tauri v
 - **Drag & Drop**: Direct drag-to-NLE support for professional workflows.
 - **Cross-Platform Reveal**: "Open in Finder/Explorer" functionality.
 
+## Installation Notes
+
+### macOS
+Since the app is currently self-signed, macOS Gatekeeper will show a warning on the first launch.
+- **Solution**: To open the app, **Right-click** on the SonicFlow app icon and select **Open**. Click "Open" again in the dialog. This is only required once.
+
+### Windows
+Windows SmartScreen might show a warning. Click **"More info"** and then **"Run anyway"**.
+
 ## Development
 
 ### Prerequisites
