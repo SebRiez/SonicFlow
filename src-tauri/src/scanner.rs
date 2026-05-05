@@ -4,10 +4,14 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 use crate::db::Sound;
+use crate::ucs;
+use crate::riff_meta;
 
 static AUDIO_EXTENSIONS: &[&str] = &[
     "wav", "aif", "aiff", "mp3", "flac", "ogg", "opus", "m4a", "aac", "wma", "alac", "caf", "bwf",
 ];
+
+static RIFF_EXTENSIONS: &[&str] = &["wav", "bwf"];
 
 pub struct ScanResult {
     pub sounds: Vec<Sound>,
@@ -35,13 +39,12 @@ pub fn scan_directory(root: &str, library_id: i64, now: &str) -> ScanResult {
             continue;
         }
 
-        // Skip macOS resource-fork / Apple Preview dot-files (e.g. ._filename.wav)
+        // Skip macOS resource-fork files (e.g. ._filename.wav)
         let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if fname.starts_with('.') {
             continue;
         }
 
-        // Compute relative folder from library root
         let relative_folder = path
             .parent()
             .and_then(|p| p.strip_prefix(root_path).ok())
@@ -71,10 +74,8 @@ fn extract_metadata(
         .to_string();
 
     let filepath = path.to_string_lossy().to_string();
-
     let filesize = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
 
-    // Defaults
     let mut duration: Option<f64> = None;
     let mut samplerate: Option<i64> = None;
     let mut bitdepth: Option<i64> = None;
@@ -90,12 +91,10 @@ fn extract_metadata(
     let mut tag_keywords: Option<String> = None;
     let mut tag_tracknumber: Option<String> = None;
 
-    // Try to read with lofty
     if let Ok(tagged_file) = Probe::open(path)
         .map_err(|e| e.to_string())
         .and_then(|p| p.read().map_err(|e| e.to_string()))
     {
-        // Audio properties
         if let Some(props) = Some(tagged_file.properties()) {
             duration = Some(props.duration().as_secs_f64());
             samplerate = props.sample_rate().map(|v| v as i64);
@@ -104,7 +103,6 @@ fn extract_metadata(
             bitrate = props.audio_bitrate().map(|v| v as i64);
         }
 
-        // Tags
         if let Some(tag) = tagged_file.primary_tag() {
             tag_title = tag.title().map(|s| s.to_string());
             tag_artist = tag.artist().map(|s| s.to_string());
@@ -113,7 +111,6 @@ fn extract_metadata(
             tag_genre = tag.genre().map(|s| s.to_string());
             tag_tracknumber = tag.track().map(|v| v.to_string());
 
-            // BPM / Description / Keywords from raw items
             for item in tag.items() {
                 let key_str = format!("{:?}", item.key()).to_lowercase();
                 let value_str = match item.value() {
@@ -122,19 +119,45 @@ fn extract_metadata(
                     _ => None,
                 };
                 if let Some(val) = value_str {
-                    if key_str.contains("bpm") {
-                        tag_bpm = Some(val.clone());
-                    }
-                    if key_str.contains("description") || key_str.contains("contentdescr") {
-                        tag_description = Some(val.clone());
-                    }
-                    if key_str.contains("keyword") || key_str.contains("subject") {
-                        tag_keywords = Some(val.clone());
-                    }
+                    if key_str.contains("bpm") { tag_bpm = Some(val.clone()); }
+                    if key_str.contains("description") || key_str.contains("contentdescr") { tag_description = Some(val.clone()); }
+                    if key_str.contains("keyword") || key_str.contains("subject") { tag_keywords = Some(val.clone()); }
                 }
             }
         }
     }
+
+    // ── UCS Extraction (priority: iXML > bext > filename) ──────────────────────
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+    // 1. Filename parser (always attempted, lowest priority)
+    let from_filename = ucs::parse_ucs_filename(stem);
+
+    // 2. RIFF metadata (bext + iXML) – WAV/BWF only
+    let riff = if RIFF_EXTENSIONS.contains(&ext) {
+        riff_meta::read_riff_metadata(path)
+    } else {
+        None
+    };
+
+    // Merge fields: iXML > bext > filename
+    let ucs_cat_id = riff.as_ref()
+        .and_then(|r| r.ixml.as_ref()).and_then(|x| x.ucs_cat_id.clone())
+        .or_else(|| from_filename.as_ref().and_then(|f| f.cat_id.clone()));
+
+    let ucs_fx_name = riff.as_ref()
+        .and_then(|r| r.ixml.as_ref()).and_then(|x| x.ucs_fx_name.clone())
+        .or_else(|| from_filename.as_ref().and_then(|f| f.fx_name.clone()));
+
+    let ucs_creator_id = riff.as_ref()
+        .and_then(|r| r.ixml.as_ref()).and_then(|x| x.ucs_creator_id.clone())
+        .or_else(|| riff.as_ref().and_then(|r| r.bext.as_ref()).and_then(|b| b.originator.clone()))
+        .or_else(|| from_filename.as_ref().and_then(|f| f.creator_id.clone()));
+
+    let ucs_source_id = riff.as_ref()
+        .and_then(|r| r.ixml.as_ref()).and_then(|x| x.ucs_source_id.clone())
+        .or_else(|| riff.as_ref().and_then(|r| r.bext.as_ref()).and_then(|b| b.originator_ref.clone()))
+        .or_else(|| from_filename.as_ref().and_then(|f| f.source_id.clone()));
 
     Ok(Sound {
         id: 0,
@@ -159,5 +182,10 @@ fn extract_metadata(
         tag_keywords,
         tag_tracknumber,
         imported_at: now.to_string(),
+        ucs_cat_id,
+        ucs_fx_name,
+        ucs_creator_id,
+        ucs_source_id,
+        ucs_user_category: None, // never set by scanner
     })
 }

@@ -1308,6 +1308,141 @@ body.drag-active::after {
   background: rgba(0, 212, 255, 0.15);
 }
 
+/* ── Reverse Button ─────────────────────────────────────────────── */
+#btn-reverse.active {
+  color: var(--accent-violet);
+  background: rgba(124, 111, 255, 0.15);
+}
+
+#btn-reverse.active svg path {
+  stroke: var(--accent-violet);
+}
+
+/* ── Gain Control ────────────────────────────────────────────────── */
+.gain-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.gain-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+#gain-slider {
+  -webkit-appearance: none;
+  width: 64px;
+  height: 4px;
+  background: var(--bg-overlay);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#gain-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-violet), var(--accent-cyan));
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  transition: transform 0.1s;
+}
+
+#gain-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+#gain-slider::-webkit-slider-runnable-track {
+  -webkit-appearance: none;
+  background: transparent;
+}
+
+.gain-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 42px;
+  text-align: right;
+}
+
+/* ── UCS Pill ──────────────────────────────────────────────────────────────── */
+.ucs-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  border: none;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.ucs-pill-btn.ucs-pill {
+  background: rgba(124,111,255,0.15);
+  color: #b4aeff;
+}
+
+.ucs-pill-btn.ucs-pill:hover {
+  background: rgba(124,111,255,0.3);
+  color: #d4ccff;
+}
+
+.ucs-pill-btn.ucs-pill-empty {
+  background: rgba(255,255,255,0.05);
+  color: var(--text-muted);
+  border: 1px dashed var(--border-subtle);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+tr:hover .ucs-pill-btn.ucs-pill-empty,
+tr.playing .ucs-pill-btn.ucs-pill-empty {
+  opacity: 1;
+}
+
+.col-ucs { width: 88px; overflow: visible; }
+
+/* ── UCS Tag Popover ──────────────────────────────────────────────────────── */
+.ucs-tag-popover {
+  position: fixed;
+  z-index: 5000;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+}
+
+.ucs-tag-select {
+  -webkit-appearance: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  min-width: 220px;
+  max-height: 260px;
+  outline: none;
+  cursor: pointer;
+}
+
+.ucs-tag-select:focus {
+  border-color: var(--accent-violet);
+}
+
 #player-resizer {
   position: absolute;
   top: -3px;

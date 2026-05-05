@@ -18,7 +18,7 @@ pub struct Sound {
     pub library_id: i64,
     pub filename: String,
     pub filepath: String,
-    pub relative_folder: String, // e.g. "Foley/Footsteps"
+    pub relative_folder: String,
     pub extension: String,
     pub filesize: i64,
     pub duration: Option<f64>,
@@ -36,17 +36,25 @@ pub struct Sound {
     pub tag_keywords: Option<String>,
     pub tag_tracknumber: Option<String>,
     pub imported_at: String,
+    // UCS fields (auto-detected or manually assigned)
+    pub ucs_cat_id: Option<String>,
+    pub ucs_fx_name: Option<String>,
+    pub ucs_creator_id: Option<String>,
+    pub ucs_source_id: Option<String>,
+    pub ucs_user_category: Option<String>, // manual override – never overwritten by scanner
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchFilters {
     pub library_id: Option<i64>,
-    pub folder: Option<String>, // relative_folder prefix filter
+    pub folder: Option<String>,
     pub extension: Option<String>,
     pub min_duration: Option<f64>,
     pub max_duration: Option<f64>,
     pub samplerate: Option<i64>,
+    pub bitdepth: Option<i64>,
     pub channels: Option<i64>,
+    pub ucs_cat_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -108,7 +116,12 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             tag_description TEXT,
             tag_keywords TEXT,
             tag_tracknumber TEXT,
-            imported_at TEXT NOT NULL
+            imported_at TEXT NOT NULL,
+            ucs_cat_id TEXT,
+            ucs_fx_name TEXT,
+            ucs_creator_id TEXT,
+            ucs_source_id TEXT,
+            ucs_user_category TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_sounds_library ON sounds(library_id);
@@ -147,22 +160,23 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         END;
     ")?;
 
-    // Migration: add relative_folder column to existing DBs that don't have it
-    let has_col: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('sounds') WHERE name='relative_folder'",
+    // Migrations: add columns to existing DBs
+    let col_check = |name: &str| -> bool {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('sounds') WHERE name='{}'", name),
             [],
             |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
-        > 0;
-    if !has_col {
-        conn.execute_batch(
-            "ALTER TABLE sounds ADD COLUMN relative_folder TEXT NOT NULL DEFAULT ''",
-        )?;
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_sounds_folder ON sounds(relative_folder)",
-        )?;
+        ).unwrap_or(0) > 0
+    };
+
+    if !col_check("relative_folder") {
+        conn.execute_batch("ALTER TABLE sounds ADD COLUMN relative_folder TEXT NOT NULL DEFAULT ''").ok();
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sounds_folder ON sounds(relative_folder)").ok();
+    }
+    for col in &["ucs_cat_id", "ucs_fx_name", "ucs_creator_id", "ucs_source_id", "ucs_user_category"] {
+        if !col_check(col) {
+            conn.execute_batch(&format!("ALTER TABLE sounds ADD COLUMN {} TEXT", col)).ok();
+        }
     }
 
     Ok(())
@@ -193,13 +207,16 @@ pub fn insert_sound(conn: &Connection, s: &Sound) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO sounds
         (library_id, filename, filepath, relative_folder, extension, filesize, duration, samplerate, bitdepth, channels, bitrate,
-         tag_title, tag_artist, tag_album, tag_comment, tag_genre, tag_bpm, tag_description, tag_keywords, tag_tracknumber, imported_at)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+         tag_title, tag_artist, tag_album, tag_comment, tag_genre, tag_bpm, tag_description, tag_keywords, tag_tracknumber,
+         imported_at, ucs_cat_id, ucs_fx_name, ucs_creator_id, ucs_source_id)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
         params![
             s.library_id, s.filename, s.filepath, s.relative_folder, s.extension, s.filesize,
             s.duration, s.samplerate, s.bitdepth, s.channels, s.bitrate,
             s.tag_title, s.tag_artist, s.tag_album, s.tag_comment, s.tag_genre,
-            s.tag_bpm, s.tag_description, s.tag_keywords, s.tag_tracknumber, s.imported_at
+            s.tag_bpm, s.tag_description, s.tag_keywords, s.tag_tracknumber, s.imported_at,
+            s.ucs_cat_id, s.ucs_fx_name, s.ucs_creator_id, s.ucs_source_id
+            // ucs_user_category is never written by scanner – only by save_ucs_tag command
         ],
     )?;
     Ok(())
@@ -384,10 +401,27 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
         conditions.push("s.samplerate = ?".to_string());
         params_vec.push(Box::new(sr));
     }
+    if let Some(bd) = filters.bitdepth {
+        conditions.push("s.bitdepth = ?".to_string());
+        params_vec.push(Box::new(bd));
+    }
     if let Some(ch) = filters.channels {
         conditions.push("s.channels = ?".to_string());
         params_vec.push(Box::new(ch));
     }
+    if let Some(ref ucs) = filters.ucs_cat_id {
+        if !ucs.is_empty() {
+            // Match auto-detected OR manually assigned UCS category
+            conditions.push("(LOWER(COALESCE(s.ucs_user_category, s.ucs_cat_id, '')) = LOWER(?))".to_string());
+            params_vec.push(Box::new(ucs.clone()));
+        }
+    }
+
+    let sel_cols = "s.id, s.library_id, s.filename, s.filepath, s.relative_folder, s.extension, s.filesize,
+             s.duration, s.samplerate, s.bitdepth, s.channels, s.bitrate,
+             s.tag_title, s.tag_artist, s.tag_album, s.tag_comment, s.tag_genre,
+             s.tag_bpm, s.tag_description, s.tag_keywords, s.tag_tracknumber, s.imported_at,
+             s.ucs_cat_id, s.ucs_fx_name, s.ucs_creator_id, s.ucs_source_id, s.ucs_user_category";
 
     let sql = if use_fts {
         let fts_query = format!("{}*", trimmed.replace('"', "\"\""));
@@ -398,15 +432,9 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
             format!("AND {}", conditions.join(" AND "))
         };
         format!(
-            "SELECT s.id, s.library_id, s.filename, s.filepath, s.relative_folder, s.extension, s.filesize,
-             s.duration, s.samplerate, s.bitdepth, s.channels, s.bitrate,
-             s.tag_title, s.tag_artist, s.tag_album, s.tag_comment, s.tag_genre,
-             s.tag_bpm, s.tag_description, s.tag_keywords, s.tag_tracknumber, s.imported_at
-             FROM sounds_fts fts
-             JOIN sounds s ON s.id = fts.rowid
-             WHERE sounds_fts MATCH ?
-             {} ORDER BY s.filename LIMIT 2000",
-            where_clause
+            "SELECT {} FROM sounds_fts fts JOIN sounds s ON s.id = fts.rowid
+             WHERE sounds_fts MATCH ? {} ORDER BY s.filename LIMIT 2000",
+            sel_cols, where_clause
         )
     } else {
         let where_clause = if conditions.is_empty() {
@@ -415,12 +443,8 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
             format!("WHERE {}", conditions.join(" AND "))
         };
         format!(
-            "SELECT id, library_id, filename, filepath, relative_folder, extension, filesize,
-             duration, samplerate, bitdepth, channels, bitrate,
-             tag_title, tag_artist, tag_album, tag_comment, tag_genre,
-             tag_bpm, tag_description, tag_keywords, tag_tracknumber, imported_at
-             FROM sounds s {} ORDER BY filename LIMIT 2000",
-            where_clause
+            "SELECT {} FROM sounds s {} ORDER BY filename LIMIT 2000",
+            sel_cols, where_clause
         )
     };
 
@@ -451,8 +475,22 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
                 tag_keywords: row.get(19)?,
                 tag_tracknumber: row.get(20)?,
                 imported_at: row.get(21)?,
+                ucs_cat_id: row.get(22)?,
+                ucs_fx_name: row.get(23)?,
+                ucs_creator_id: row.get(24)?,
+                ucs_source_id: row.get(25)?,
+                ucs_user_category: row.get(26)?,
             })
         })?
         .collect::<Result<Vec<_>>>()?;
     Ok(sounds)
+}
+
+/// Persist a manually assigned UCS user category (never overwritten by scanner).
+pub fn save_ucs_user_category(conn: &Connection, id: i64, ucs_user_category: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE sounds SET ucs_user_category = ?1 WHERE id = ?2",
+        params![ucs_user_category, id],
+    )?;
+    Ok(())
 }

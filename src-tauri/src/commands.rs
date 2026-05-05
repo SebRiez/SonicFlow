@@ -1,5 +1,6 @@
 use crate::db;
 use crate::scanner;
+use crate::ucs;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -203,4 +204,22 @@ pub fn open_in_finder(path: String) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Persist a manually assigned UCS user category for a sound.
+/// This field is NEVER overwritten by the scanner — only by this command.
+#[tauri::command]
+pub fn save_ucs_tag(
+    id: i64,
+    ucs_user_category: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let conn = state.db.lock().map_err(|e| AppError { message: e.to_string() })?;
+    let cat = if ucs_user_category.is_empty() { None } else { Some(ucs_user_category.as_str()) };
+    db::save_ucs_user_category(&conn, id, cat)?;
+    Ok(())
+}
 
+/// Returns the full sorted list of official UCS CatIDs for frontend dropdowns.
+#[tauri::command]
+pub fn get_ucs_cat_ids() -> Vec<&'static str> {
+    ucs::all_cat_ids()
+}

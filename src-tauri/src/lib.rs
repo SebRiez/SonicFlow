@@ -1,6 +1,8 @@
 pub mod commands;
 mod db;
 mod scanner;
+mod ucs;
+mod riff_meta;
 
 pub struct AppState {
     pub db: std::sync::Mutex<rusqlite::Connection>,
@@ -26,6 +28,8 @@ pub fn run() {
             commands::get_folders,
             commands::search_sounds,
             commands::open_in_finder,
+            commands::save_ucs_tag,
+            commands::get_ucs_cat_ids,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,4 +1,5 @@
 import { FFT, applyHanningWindow } from './fft.js';
+import { UCS_CAT_IDS, UCS_CAT_ID_MAP } from './ucs_data.js';
 // SonicFlow – Frontend Logic (Tauri v2)
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { open } = window.__TAURI__.dialog;
@@ -14,7 +15,12 @@ let sortAsc     = true;
 let searchTimer = null;
 let currentFile = null;
 let audioCtx    = null;
-let waveformData = null;
+let gainNode    = null;       // GainNode for volume leveling
+let waveformData = null;      // raw Float32Array (forward)
+let reversedData = null;      // reversed copy of waveformData
+let isReversed  = false;      // reverse playback state
+let currentAssetUrl = null;   // original asset:// URL of the loaded file
+let reverseBlobUrl  = null;   // blob: URL created for reversed WAV
 let currentSampleRate = 48000;
 let wfMode = 0; // 0=Classic, 1=Histogram, 2=Symmetric X-Ray
 let wfZoom = 1;
@@ -37,6 +43,8 @@ function createTab() {
     filterExt: '',
     filterChannels: '',
     filterSamplerate: '',
+    filterBitdepth: '',
+    filterUcsCat: '',
     sortKey: 'filename',
     sortAsc: true,
     scrollTop: 0
@@ -89,6 +97,9 @@ const iconPlay        = $('icon-play');
 const iconPause       = $('icon-pause');
 const btnStop         = $('btn-stop');
 const volumeSlider    = $('volume-slider');
+const gainSlider      = $('gain-slider');
+const gainValueLabel  = $('gain-value');
+const btnReverse      = $('btn-reverse');
 const audioOutputSelect = $('audio-output-select');
 const btnOpenFile     = $('btn-open-file');
 const btnXRay         = $('btn-xray');
@@ -96,6 +107,8 @@ const waveformCanvas  = $('waveform-canvas');
 const waveformPlayhead = $('waveform-playhead');
 const waveformContainer = $('waveform-container');
 const playerResizer   = $('player-resizer');
+const filterBitdepth  = $('filter-bitdepth');
+const filterUcsCat    = $('filter-ucs-cat');
 
 // ─── Column Definitions ──────────────────────────────────────────────────────
 const COLS = [
@@ -108,6 +121,7 @@ const COLS = [
   { key: 'bd',       width: 48,  resizable: true  },
   { key: 'ch',       width: 52,  resizable: true  },
   { key: 'tags',     width: 200, resizable: true  },
+  { key: 'ucs',      width: 88,  resizable: true  },
   { key: 'size',     width: 70,  resizable: true  },
   { key: 'drag',     width: 36,  resizable: false },
 ];
@@ -436,6 +450,8 @@ function switchTab(id) {
     oldTab.filterExt = filterExt.value;
     oldTab.filterChannels = filterChannels.value;
     oldTab.filterSamplerate = filterSamplerate.value;
+    oldTab.filterBitdepth = filterBitdepth.value;
+    oldTab.filterUcsCat = filterUcsCat.value;
     oldTab.scrollTop = $('table-wrapper').scrollTop;
   }
   
@@ -453,6 +469,8 @@ function switchTab(id) {
   filterExt.value = newTab.filterExt;
   filterChannels.value = newTab.filterChannels;
   filterSamplerate.value = newTab.filterSamplerate;
+  filterBitdepth.value = newTab.filterBitdepth || '';
+  filterUcsCat.value   = newTab.filterUcsCat   || '';
   
   sortBtns.forEach(b => { 
     b.classList.toggle('active', b.dataset.sort === sortKey); 
@@ -629,7 +647,9 @@ async function runSearch() {
     extension:  filterExt.value || null,
     min_duration: null, max_duration: null,
     samplerate: filterSamplerate.value ? parseInt(filterSamplerate.value) : null,
-    channels:   filterChannels.value  ? parseInt(filterChannels.value)   : null,
+    bitdepth:   filterBitdepth.value   ? parseInt(filterBitdepth.value)   : null,
+    channels:   filterChannels.value   ? parseInt(filterChannels.value)   : null,
+    ucs_cat_id: filterUcsCat.value || null,
   };
   try { allSounds = await invoke('search_sounds', { query, filters }); }
   catch (e) { showToast('Suchfehler: ' + e, 'error'); allSounds = []; }
@@ -690,6 +710,7 @@ function buildRow(sound) {
     <td class="col-bd cell-mono">${sound.bitdepth ?? '–'}</td>
     <td class="col-ch cell-mono">${formatChannels(sound.channels)}</td>
     <td class="col-tags"><div class="cell-tags">${pills.slice(0,3).join('')}</div></td>
+    <td class="col-ucs">${buildUcsPill(sound)}</td>
     <td class="col-size cell-mono">${formatSize(sound.filesize)}</td>
     <td class="col-drag">
       <div class="btn-drag-handle" title="In NLE ziehen" aria-label="Datei in NLE ziehen">
@@ -702,8 +723,17 @@ function buildRow(sound) {
     </td>`;
 
   tr.querySelector('.btn-row-play').addEventListener('click', e => { e.stopPropagation(); togglePlay(sound); });
-  tr.addEventListener('click', e => { if (!e.target.closest('.btn-drag-handle') && !e.target.closest('.row-waveform')) togglePlay(sound); });
+  tr.addEventListener('click', e => { if (!e.target.closest('.btn-drag-handle') && !e.target.closest('.row-waveform') && !e.target.closest('.ucs-pill-btn')) togglePlay(sound); });
   tr.querySelector('.row-waveform').addEventListener('click', e => e.stopPropagation());
+
+  // ── UCS inline tagging ──
+  const ucsPillBtn = tr.querySelector('.ucs-pill-btn');
+  if (ucsPillBtn) {
+    ucsPillBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      openUcsTagDialog(sound, ucsPillBtn);
+    });
+  }
 
   // ── Native Drag & Drop to NLEs ──
   tr.addEventListener('dragstart', e => {
@@ -807,10 +837,25 @@ function togglePlay(sound) {
   playSound(sound);
 }
 
+function ensureAudioContext() {
+  if (!audioCtx) audioCtx = new AudioContext();
+}
+
+function getGainDb(sliderVal) {
+  // slider 0–2 linear → dB; 1.0 = 0 dB
+  if (sliderVal <= 0) return '-∞';
+  return (20 * Math.log10(sliderVal)).toFixed(1) + ' dB';
+}
+
 function playSound(sound) {
   currentFile = sound.filepath;
   // Use Tauri's asset:// protocol – file:// is blocked by the WebView CSP
   const assetUrl = convertFileSrc(sound.filepath);
+  currentAssetUrl = assetUrl;
+
+  // Clean up any leftover reverse blob from a previous file
+  if (reverseBlobUrl) { URL.revokeObjectURL(reverseBlobUrl); reverseBlobUrl = null; }
+
   audioEl.src = assetUrl;
   audioEl.load();
   audioEl.play().catch(err => showToast('Wiedergabe nicht möglich: ' + err.message, 'error'));
@@ -825,6 +870,11 @@ function playSound(sound) {
   ].filter(Boolean).join(' · ');
   playerBar.removeAttribute('hidden');
   btnOpenFile.dataset.filepath = sound.filepath;
+
+  // Reset reverse state when a new file is loaded
+  isReversed = false;
+  btnReverse.classList.remove('active');
+  reversedData = null;
 
   drawWaveform(assetUrl);
   renderResults();
@@ -845,11 +895,14 @@ async function drawWaveform(uri) {
   ctx.fillRect(0, H/2 - 1, W, 2);
 
   try {
-    if (!audioCtx) audioCtx = new AudioContext();
+    ensureAudioContext();
     const resp = await fetch(uri);
     const arrayBuf = await resp.arrayBuffer();
     const audioBuf = await audioCtx.decodeAudioData(arrayBuf);
+    // Store forward channel data
     waveformData = audioBuf.getChannelData(0);
+    // Pre-compute reversed copy
+    reversedData = new Float32Array(waveformData).reverse();
     currentSampleRate = audioBuf.sampleRate;
     wfZoom = 1;
     wfPan = 0;
@@ -872,7 +925,8 @@ function renderWaveform() {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
 
-  const data = waveformData;
+  // Use reversed data when reverse mode is active
+  const data = isReversed && reversedData ? reversedData : waveformData;
   const totalSamples = data.length;
   const visibleSamples = Math.floor(totalSamples / wfZoom);
   const startSample = Math.floor(wfPan * (totalSamples - visibleSamples));
@@ -1013,6 +1067,125 @@ btnXRay.addEventListener('click', () => {
   renderWaveform();
 });
 
+// ─── Gain Slider ─────────────────────────────────────────────────────────────
+function updateGainLabel(val) {
+  gainValueLabel.textContent = getGainDb(parseFloat(val));
+}
+
+gainSlider.addEventListener('input', e => {
+  const val = parseFloat(e.target.value);
+  audioEl.volume = Math.min(1, val);  // <audio> volume caps at 1
+  // For gain > 1 we rely on a WebAudio GainNode if available
+  if (gainNode) gainNode.gain.value = val;
+  updateGainLabel(val);
+});
+
+// Initialise label on page load
+updateGainLabel(gainSlider.value);
+
+// ─── Reverse Playback ─────────────────────────────────────────────────────────
+btnReverse.addEventListener('click', () => {
+  if (!currentFile) return;
+  isReversed = !isReversed;
+  btnReverse.classList.toggle('active', isReversed);
+  showToast(isReversed ? '◀ Reverse aktiv' : '▶ Normale Wiedergabe', 'info');
+  applyReversePlayback();
+  renderWaveform();
+});
+
+// Encodes an AudioBuffer as a 16-bit stereo/mono WAV Blob (all channels).
+function audioBufferToWavBlob(buffer) {
+  const numCh = buffer.numberOfChannels;
+  const sr    = buffer.sampleRate;
+  const len   = buffer.length;
+  const dataLen = len * numCh * 2; // 16-bit samples
+  const wav   = new ArrayBuffer(44 + dataLen);
+  const v     = new DataView(wav);
+  const str   = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
+
+  str(0, 'RIFF');  v.setUint32(4, 36 + dataLen, true);
+  str(8, 'WAVE');  str(12, 'fmt ');
+  v.setUint32(16, 16, true);           // chunk size
+  v.setUint16(20, 1,  true);           // PCM
+  v.setUint16(22, numCh, true);
+  v.setUint32(24, sr, true);
+  v.setUint32(28, sr * numCh * 2, true); // byte rate
+  v.setUint16(32, numCh * 2, true);    // block align
+  v.setUint16(34, 16, true);           // bit depth
+  str(36, 'data'); v.setUint32(40, dataLen, true);
+
+  let off = 44;
+  for (let i = 0; i < len; i++) {
+    for (let ch = 0; ch < numCh; ch++) {
+      const s = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
+      v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      off += 2;
+    }
+  }
+  return new Blob([wav], { type: 'audio/wav' });
+}
+
+async function applyReversePlayback() {
+  if (!currentFile || !currentAssetUrl) return;
+
+  const wasPlaying  = !audioEl.paused;
+  const positionPct = audioEl.duration ? audioEl.currentTime / audioEl.duration : 0;
+
+  // Pause immediately so the old src stops producing sound
+  audioEl.pause();
+
+  try {
+    if (isReversed) {
+      // ── Decode original → build reversed AudioBuffer → WAV blob ──
+      ensureAudioContext();
+      const resp = await fetch(currentAssetUrl);
+      const arrayBuf = await resp.arrayBuffer();
+      const origBuf  = await audioCtx.decodeAudioData(arrayBuf);
+
+      const numCh = origBuf.numberOfChannels;
+      const len   = origBuf.length;
+      const revBuf = audioCtx.createBuffer(numCh, len, origBuf.sampleRate);
+      for (let ch = 0; ch < numCh; ch++) {
+        const fwd = origBuf.getChannelData(ch);
+        const rev = revBuf.getChannelData(ch);
+        for (let i = 0; i < len; i++) rev[i] = fwd[len - 1 - i];
+      }
+
+      if (reverseBlobUrl) { URL.revokeObjectURL(reverseBlobUrl); }
+      reverseBlobUrl = URL.createObjectURL(audioBufferToWavBlob(revBuf));
+
+      const targetPct = 1 - positionPct; // mirrored seek position
+      audioEl.src = reverseBlobUrl;
+      audioEl.load();
+      audioEl.addEventListener('loadedmetadata', () => {
+        audioEl.currentTime = targetPct * audioEl.duration;
+        if (wasPlaying) audioEl.play().catch(() => {});
+      }, { once: true });
+
+    } else {
+      // ── Switch back to original file ──
+      const targetPct = 1 - positionPct;
+      if (reverseBlobUrl) { URL.revokeObjectURL(reverseBlobUrl); reverseBlobUrl = null; }
+
+      audioEl.src = currentAssetUrl;
+      audioEl.load();
+      audioEl.addEventListener('loadedmetadata', () => {
+        audioEl.currentTime = targetPct * audioEl.duration;
+        if (wasPlaying) audioEl.play().catch(() => {});
+      }, { once: true });
+    }
+
+  } catch (err) {
+    showToast('Reverse-Fehler: ' + err.message, 'error');
+    isReversed = false;
+    btnReverse.classList.remove('active');
+    // Restore original playback
+    audioEl.src = currentAssetUrl;
+    audioEl.load();
+    if (wasPlaying) audioEl.play().catch(() => {});
+  }
+}
+
 
 
 progressWrapper.addEventListener('click', e => {
@@ -1118,11 +1291,15 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); searchInput.focus(); searchInput.select(); }
   if ((e.metaKey || e.ctrlKey) && e.key === 't') { e.preventDefault(); addNewTab(); }
   if ((e.metaKey || e.ctrlKey) && e.key === 'w') { e.preventDefault(); closeTab(activeTabId); }
-    if (e.key.toLowerCase() === 'x' && document.activeElement.tagName !== 'INPUT' && currentFile) {
+  if (e.key.toLowerCase() === 'x' && document.activeElement.tagName !== 'INPUT' && currentFile) {
     e.preventDefault();
     btnXRay.click();
   }
-if (e.key === ' ' && document.activeElement.tagName !== 'INPUT') {
+  if (e.key.toLowerCase() === 'r' && document.activeElement.tagName !== 'INPUT' && currentFile) {
+    e.preventDefault();
+    btnReverse.click();
+  }
+  if (e.key === ' ' && document.activeElement.tagName !== 'INPUT') {
     e.preventDefault();
     if (!audioEl.paused) audioEl.pause(); else if (currentFile) audioEl.play();
   }
@@ -1144,8 +1321,11 @@ filterLibrary.addEventListener('change', () => {
 filterExt.addEventListener('change',        runSearch);
 filterChannels.addEventListener('change',   runSearch);
 filterSamplerate.addEventListener('change', runSearch);
+filterBitdepth.addEventListener('change',   runSearch);
+filterUcsCat.addEventListener('change',     runSearch);
 btnClearFilters.addEventListener('click', () => {
-  filterExt.value = ''; filterChannels.value = ''; filterSamplerate.value = ''; filterLibrary.value = '';
+  filterExt.value = ''; filterChannels.value = ''; filterSamplerate.value = '';
+  filterBitdepth.value = ''; filterUcsCat.value = ''; filterLibrary.value = '';
   activeLibId = null; activeFolderPath = null;
   renderLibraryList();
   folderTreeSection.setAttribute('hidden','');
@@ -1155,6 +1335,81 @@ sortBtns.forEach(b => b.addEventListener('click', () => setSort(b.dataset.sort))
 tableHeaders.forEach(th => th.addEventListener('click', () => setSort(th.dataset.sort)));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+// Populate UCS CatID dropdown on startup
+(function populateUcsDropdown() {
+  UCS_CAT_IDS.forEach(({ id, label }) => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = `${id} – ${label}`;
+    filterUcsCat.appendChild(opt);
+  });
+})();
+
+/** Returns an HTML string for the UCS pill in a result row. */
+function buildUcsPill(sound) {
+  const catId = sound.ucs_user_category || sound.ucs_cat_id || null;
+  if (!catId) {
+    return `<button class="ucs-pill-btn ucs-pill-empty" title="UCS-Kategorie zuweisen" aria-label="UCS-Kategorie zuweisen">+ UCS</button>`;
+  }
+  const label = UCS_CAT_ID_MAP[catId] || catId;
+  return `<button class="ucs-pill-btn ucs-pill" title="${escHtml(label)} – klicken zum ändern" aria-label="UCS: ${escHtml(catId)}">${escHtml(catId)}</button>`;
+}
+
+/** Opens a popover-style select for inline UCS tagging. */
+function openUcsTagDialog(sound, anchorEl) {
+  // Remove existing dialog if any
+  document.getElementById('ucs-tag-popover')?.remove();
+
+  const popover = document.createElement('div');
+  popover.id = 'ucs-tag-popover';
+  popover.className = 'ucs-tag-popover';
+
+  const sel = document.createElement('select');
+  sel.className = 'ucs-tag-select';
+  sel.innerHTML = `<option value="">– Keine UCS-Kategorie –</option>`;
+  UCS_CAT_IDS.forEach(({ id, label }) => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = `${id} – ${label}`;
+    const current = sound.ucs_user_category || sound.ucs_cat_id;
+    if (id === current) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  popover.appendChild(sel);
+  document.body.appendChild(popover);
+
+  // Position below anchor
+  const rect = anchorEl.getBoundingClientRect();
+  popover.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+  popover.style.left = (rect.left + window.scrollX) + 'px';
+
+  sel.focus();
+
+  async function applyTag() {
+    const chosen = sel.value;
+    try {
+      await invoke('save_ucs_tag', { id: sound.id, ucsUserCategory: chosen });
+      sound.ucs_user_category = chosen || null;
+      // Re-render the pill in-place
+      const pillCell = anchorEl.closest('td');
+      if (pillCell) pillCell.innerHTML = buildUcsPill(sound);
+      // Attach new handler
+      pillCell?.querySelector('.ucs-pill-btn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        openUcsTagDialog(sound, pillCell.querySelector('.ucs-pill-btn'));
+      });
+      showToast(chosen ? `UCS: ${chosen}` : 'UCS-Tag entfernt', 'info');
+    } catch (e) {
+      showToast('UCS-Fehler: ' + e.message, 'error');
+    }
+    popover.remove();
+  }
+
+  sel.addEventListener('change', applyTag);
+  sel.addEventListener('blur', () => setTimeout(() => popover.remove(), 150));
+}
+
 function formatDuration(s) { if (s==null) return '–'; const sec=Math.round(s); return `${Math.floor(sec/60)}:${(sec%60).toString().padStart(2,'0')}`; }
 function fmtSec(s) { if (!s||isNaN(s)) return '0:00'; const sec=Math.floor(s); return `${Math.floor(sec/60)}:${(sec%60).toString().padStart(2,'0')}`; }
 function formatSamplerate(sr) { return sr ? (sr/1000).toFixed(sr%1000===0?0:1) : '–'; }
