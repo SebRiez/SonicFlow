@@ -39,16 +39,34 @@
         </svg>
         Ordner importieren
       </button>
+      <button id="btn-dock-mode" class="btn-ghost" style="margin-top: 8px; width: 100%;" title="Dock Mode umschalten">
+        🖥️ Dock Mode
+      </button>
     </div>
 
-    <div id="library-section">
-      <div class="section-label">BIBLIOTHEKEN</div>
-      <ul id="library-list" role="list" aria-label="Bibliotheksliste"></ul>
+    <div id="sidebar-content">
+      <div id="library-section">
+        <div class="section-label">BIBLIOTHEKEN</div>
+        <ul id="library-list" role="list" aria-label="Bibliotheksliste"></ul>
 
-      <!-- Folder Tree -->
-      <div id="folder-tree-section" hidden>
-        <div class="section-label" style="margin-top:12px">ORDNER</div>
-        <ul id="folder-tree" role="tree" aria-label="Ordnerstruktur"></ul>
+        <!-- Folder Tree -->
+        <div id="folder-tree-section" hidden>
+          <div class="section-label" style="margin-top:12px">ORDNER</div>
+          <ul id="folder-tree" role="tree" aria-label="Ordnerstruktur"></ul>
+        </div>
+      </div>
+
+      <div id="collections-section">
+        <div class="section-label" style="margin-top:24px; display: flex; justify-content: space-between; align-items: center;">
+          SAMMLUNGEN
+          <button id="btn-add-collection" class="btn-icon-small" title="Neue Sammlung">
+            <svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <ul id="collections-list" role="list" aria-label="Sammlungsliste"></ul>
+        <div id="new-collection-container" hidden style="padding: 4px 12px;">
+          <input type="text" id="input-new-collection" placeholder="Name der Sammlung..." style="width: 100%; background: var(--bg-elevated); border: 1px solid var(--accent-violet); color: white; padding: 6px; border-radius: 4px; outline: none; font-size: 12px;" />
+        </div>
       </div>
     </div>
 
@@ -56,6 +74,7 @@
       <div id="db-stats">
         <span id="stat-total-files">0</span> Dateien indexiert
       </div>
+      <button id="btn-show-help" class="btn-icon-small" title="Hilfe & Dokumentation">❓</button>
     </div>
   </aside>
 
@@ -65,6 +84,12 @@
     <!-- NEW: TAB BAR -->
     <div id="tab-bar-container" role="tablist" aria-label="Such-Tabs">
       <div id="tab-list"></div>
+      <button id="btn-freesound-search" class="btn-ghost" title="Freesound.org durchsuchen">
+        ☁️ Freesound
+      </button>
+      <button id="btn-settings" class="btn-ghost" title="Einstellungen">
+        ⚙️
+      </button>
       <button id="btn-new-tab" class="btn-ghost" title="Neuer Tab (Cmd+T)" aria-label="Neuer Tab">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
           <path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -87,6 +112,9 @@
           spellcheck="false"
           aria-label="Sound-Suche"
         />
+        <button id="btn-shuffle" class="btn-ghost" title="Zufällige Ergebnisse (Shuffle)">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M14 4l3 3-3 3M4 14l-3-3 3-3M17 7H9M1 11h8M14 14l3-3-3-3M4 4l-3 3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <kbd id="search-shortcut" aria-hidden="true">⌘K</kbd>
       </div>
 
@@ -189,87 +217,82 @@
     </div>
 
     <!-- AUDIO PREVIEW PLAYER -->
-    <footer id="player-bar" aria-label="Audiovorschau" hidden>
+    <footer id="player-bar" aria-label="Audiovorschau">
       <div id="player-resizer" aria-hidden="true"></div>
-      <div id="player-info">
-        <div id="player-icon">♪</div>
-        <div id="player-details">
-          <div id="player-filename" class="player-name">–</div>
-          <div id="player-meta" class="player-sub">–</div>
-        </div>
-      </div>
-
-      <!-- Waveform Canvas -->
-      <div id="waveform-container" aria-label="Wellenform">
-        <canvas id="waveform-canvas" width="400" height="48" aria-hidden="true"></canvas>
-        <div id="waveform-playhead" aria-hidden="true"></div>
-      </div>
-
-      <div id="player-controls">
-        <button id="btn-play-pause" class="btn-play" aria-label="Play/Pause" title="Play/Pause">
-          <svg id="icon-play" width="20" height="20" viewBox="0 0 20 20" fill="none">
-            <path d="M6 4l12 6-12 6V4z" fill="currentColor"/>
-          </svg>
-          <svg id="icon-pause" width="20" height="20" viewBox="0 0 20 20" fill="none" hidden>
-            <rect x="4" y="3" width="4" height="14" rx="1" fill="currentColor"/>
-            <rect x="12" y="3" width="4" height="14" rx="1" fill="currentColor"/>
-          </svg>
-        </button>
-        <div id="player-progress-wrapper" role="slider" aria-label="Position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
-          <div id="player-progress-track">
-            <div id="player-progress-fill"></div>
-            <div id="player-progress-thumb"></div>
+      
+      <div id="player-main-row">
+        <div id="player-info">
+          <div id="player-icon">♪</div>
+          <div id="player-details">
+            <div id="player-filename" class="player-name">Keine Datei ausgewählt</div>
+            <div id="player-meta" class="player-sub">Wähle einen Sound zum Abspielen</div>
           </div>
         </div>
-        <span id="player-time">0:00 / 0:00</span>
-        <button id="btn-stop" class="btn-ghost" title="Stoppen" aria-label="Stoppen">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <rect x="2" y="2" width="12" height="12" rx="2" fill="currentColor"/>
-          </svg>
-        </button>
 
-        <div class="volume-control" title="Lautstärke">
-          <svg class="vol-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M2 5.5v3h2.5l3.5 3v-9l-3.5 3H2z" fill="currentColor"/>
-            <path d="M10 4.5c1.5 1 1.5 4 0 5" stroke="currentColor" stroke-linecap="round"/>
-            <path d="M11.5 3c2 1.5 2 6.5 0 8" stroke="currentColor" stroke-linecap="round"/>
-          </svg>
-          <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="1" aria-label="Lautstärke" />
+        <!-- Waveform Canvas -->
+        <div id="waveform-container" aria-label="Wellenform">
+          <canvas id="waveform-canvas" width="600" height="80" aria-hidden="true"></canvas>
+          <div id="waveform-playhead" aria-hidden="true"></div>
         </div>
-        <div class="output-control" title="Audio-Ausgang">
+      </div>
+
+      <div id="player-controls-row">
+        <div class="control-group">
+          <button id="btn-play-pause" class="btn-play" aria-label="Play/Pause">
+            <svg id="icon-play" width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M6 4l12 6-12 6V4z" fill="currentColor"/></svg>
+            <svg id="icon-pause" width="20" height="20" viewBox="0 0 20 20" fill="none" hidden><rect x="4" y="3" width="4" height="14" rx="1" fill="currentColor"/><rect x="12" y="3" width="4" height="14" rx="1" fill="currentColor"/></svg>
+            <span>Play</span>
+          </button>
+          <button id="btn-stop" class="btn-ghost-label" title="Stoppen">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" fill="currentColor"/></svg>
+            <span>Stop</span>
+          </button>
+        </div>
+
+        <div class="control-group">
+          <span id="player-time">0:00 / 0:00</span>
+          <div id="player-progress-wrapper" role="slider" aria-label="Position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+            <div id="player-progress-track">
+              <div id="player-progress-fill"></div>
+              <div id="player-progress-thumb"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <div class="volume-control" title="Lautstärke">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 5.5v3h2.5l3.5 3v-9l-3.5 3H2z" fill="currentColor"/></svg>
+            <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="1" />
+          </div>
+          <div class="gain-control" title="Gain">
+            <input type="range" id="gain-slider" min="0" max="2" step="0.01" value="1" />
+            <span id="gain-value" class="gain-label">0 dB</span>
+          </div>
+        </div>
+
+        <div class="control-group buttons-grid">
+          <button id="btn-reverse" class="btn-ghost-label" title="Reverse Playback (R)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13 8H3M7 4l-4 4 4 4M13 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Reverse</span>
+          </button>
+          <button id="btn-xray" class="btn-ghost-label" title="X-Ray Mode (X)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 14l12-12M14 14L2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span>X-Ray</span>
+          </button>
+          <button id="btn-open-file" class="btn-ghost-label" title="Im Finder öffnen">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 3H3a1 1 0 00-1 1v9a1 1 0 001 1h10a1 1 0 001-1V7M10 2h4v4M14 2l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Finder</span>
+          </button>
+          <button id="btn-exit-dock" class="btn-ghost-label" title="Dock Mode verlassen" hidden>
+            <span>Exit Dock</span>
+          </button>
+        </div>
+        
+        <div class="output-control">
           <select id="audio-output-select" aria-label="Audio Ausgang">
             <option value="">System Default</option>
           </select>
         </div>
-        <div class="gain-control" title="Gain / Vorverstärkung">
-          <svg class="gain-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path d="M7 1v12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M3 5l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M3 10h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          <input type="range" id="gain-slider" min="0" max="2" step="0.01" value="1" aria-label="Gain" />
-          <span id="gain-value" class="gain-label">0 dB</span>
-        </div>
-        <button id="btn-reverse" class="btn-ghost" title="Reverse Playback (R)" aria-label="Reverse Playback">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M13 8H3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M7 4l-4 4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M13 4v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </button>
-                <button id="btn-xray" class="btn-ghost" title="X-Ray Waveform Mode (X)" aria-label="X-Ray Mode">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M2 14l12-12M14 14L2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/>
-          </svg>
-        </button>
-        <button id="btn-open-file" class="btn-ghost" title="Im Finder öffnen" aria-label="Im Finder öffnen">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M6 3H3a1 1 0 00-1 1v9a1 1 0 001 1h10a1 1 0 001-1V7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M10 2h4v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M14 2l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </button>
       </div>
       <audio id="audio-element" preload="none"></audio>
     </footer>
@@ -289,7 +312,67 @@
   <!-- TOAST NOTIFICATION -->
   <div id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
+  <!-- CONTEXT MENU -->
+  <div id="context-menu" class="context-menu" hidden>
+    <ul id="context-menu-list"></ul>
+  </div>
+
   <script type="module" src="ucs_data.js"></script>
-  <script type="module" src="main.js"></script>
+  <!-- Settings Modal -->
+  <div id="settings-overlay" class="modal-overlay" hidden>
+    <div class="modal-content settings-modal">
+      <div class="modal-header">
+        <h2>Einstellungen</h2>
+        <button class="btn-close-modal" id="btn-close-settings">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-section">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3>Freesound.org Integration</h3>
+            <button id="btn-freesound-info" class="btn-icon-small" title="Anleitung anzeigen">ℹ️</button>
+          </div>
+          
+          <div id="freesound-instructions" class="settings-info-box" hidden>
+            <h4>So erstellst du deinen API Key:</h4>
+            <ol>
+              <li>Logge dich bei <a href="https://freesound.org" target="_blank">freesound.org</a> ein.</li>
+              <li>Gehe zu <a href="https://freesound.org/apiv2/apply/" target="_blank">API Applications</a>.</li>
+              <li>Klicke auf "Apply for a new API credential".</li>
+              <li>Gib der App einen Namen (z.B. "SonicFlow") und eine kurze Beschreibung.</li>
+              <li>Nach der Erstellung kopiere den <b>"Client secret/Api key"</b>.</li>
+            </ol>
+          </div>
+
+          <div class="settings-field">
+            <label for="input-freesound-key">API Key / Token</label>
+            <input type="password" id="input-freesound-key" placeholder="Dein API Key ...">
+          </div>
+          
+          <div class="settings-field-row" style="margin-top: 12px;">
+            <label class="checkbox-container">
+              <input type="checkbox" id="check-session-only">
+              <span class="checkbox-label">Key nur für diese Sitzung merken (nicht dauerhaft speichern)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-section">
+          <h3>Download-Ordner</h3>
+          <p class="settings-hint">Wähle aus, wo heruntergeladene Freesound-Dateien gespeichert werden sollen.</p>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="input-download-path" readonly placeholder="Standard: Musik/SonicFlow_Downloads" style="flex: 1; background: var(--bg-darker); border: 1px solid var(--border-subtle); padding: 8px; border-radius: 4px; font-size: 12px; color: var(--text-secondary);">
+            <button id="btn-choose-download-path" class="btn-ghost" style="padding: 0 12px; font-size: 12px; border: 1px solid var(--border-subtle);">Wählen...</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-save-settings" class="btn-primary">Speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/main.js"></script>
 </body>
 </html>

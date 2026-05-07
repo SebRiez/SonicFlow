@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SonicFlow Hilfe & Dokumentation</title>
+  <style>
+    :root {
+      --bg-dark: #0f0f13;
+      --bg-elevated: #1a1a24;
+      --accent-violet: #7C6FFF;
+      --accent-cyan: #00D4FF;
+      --text-primary: #ffffff;
+      --text-secondary: #a0a0b8;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      line-height: 1.6;
+      padding: 60px 20px;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+
+    h1 {
+      font-size: 42px;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent-violet), var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 10px;
+    }
+
+    .version-tag {
+      color: var(--text-secondary);
+      font-size: 14px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+
+    section {
+      margin-bottom: 50px;
+    }
+
+    h2 {
+      font-size: 24px;
+      color: var(--accent-cyan);
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    h2::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border-subtle);
+    }
+
+    .feature-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      padding: 24px;
+      border-radius: var(--radius);
+      margin-bottom: 20px;
+      transition: border-color 0.3s;
+    }
+
+    .feature-card:hover {
+      border-color: rgba(124, 111, 255, 0.3);
+    }
+
+    h3 {
+      font-size: 18px;
+      margin-bottom: 12px;
+      color: var(--text-primary);
+    }
+
+    p {
+      color: var(--text-secondary);
+      margin-bottom: 15px;
+    }
+
+    ul, ol {
+      padding-left: 20px;
+      color: var(--text-secondary);
+    }
+
+    li { margin-bottom: 8px; }
+
+    .shortcut-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--bg-elevated);
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .shortcut-table th {
+      background: rgba(124, 111, 255, 0.1);
+      color: var(--accent-violet);
+      text-align: left;
+      padding: 16px;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .shortcut-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 15px;
+    }
+
+    kbd {
+      background: #2a2a3a;
+      border: 1px solid #44445a;
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--accent-cyan);
+      box-shadow: 0 2px 0 rgba(0,0,0,0.3);
+    }
+
+    .badge {
+      background: var(--accent-violet);
+      color: white;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-right: 8px;
+    }
+
+    footer {
+      text-align: center;
+      padding-top: 40px;
+      border-top: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    a {
+      color: var(--accent-cyan);
+      text-decoration: none;
+    }
+
+    a:hover { text-decoration: underline; }
+
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>SonicFlow</h1>
+      <div class="version-tag">Benutzerhandbuch &bull; v1.0.6</div>
+    </header>
+
+    <section>
+      <h2>🚀 Die ersten Schritte</h2>
+      <div class="feature-card">
+        <h3>Bibliotheken verwalten</h3>
+        <p>SonicFlow ist darauf ausgelegt, riesige Sound-Archive blitzschnell zu durchsuchen. Importiere deine Ordner über den Button <strong>"Ordner importieren"</strong>.</p>
+        <ul>
+          <li><strong>Automatisches Indexing:</strong> Alle Metadaten werden im Hintergrund gelesen.</li>
+          <li><strong>Ordner-Struktur:</strong> Navigiere über den interaktiven Ordnerbaum in der Seitenleiste.</li>
+          <li><strong>UCS-Support:</strong> SonicFlow erkennt automatisch Kategorien nach dem Universal Category System.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>🔍 Suche & Tabs</h2>
+      <div class="feature-card">
+        <h3>Multitasking mit Tabs</h3>
+        <p>Wie in einem Browser kannst du mehrere Suchen gleichzeitig offen haben. Drücke <kbd>Cmd</kbd> + <kbd>T</kbd> für einen neuen Tab.</p>
+        <h3>Freesound.org Integration</h3>
+        <p><span class="badge">PRO</span> Suche direkt in der Cloud. Ergebnisse können vorgehört und mit einem Klick heruntergeladen werden. Sobald der Haken erscheint, ist die Datei bereit für Drag & Drop in dein NLE.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>🎹 Keyboard Shortcuts</h2>
+      <table class="shortcut-table">
+        <thead>
+          <tr>
+            <th>Funktion</th>
+            <th>Tastenkombination</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Abspielen / Pause</td><td><kbd>Leertaste</kbd></td></tr>
+          <tr><td>Vom Anfang abspielen</td><td><kbd>Enter</kbd></td></tr>
+          <tr><td>Nächster / Vorheriger Sound</td><td><kbd>↑</kbd> / <kbd>↓</kbd></td></tr>
+          <tr><td>Spulen (5 Sek. Sprünge)</td><td><kbd>←</kbd> / <kbd>→</kbd></td></tr>
+          <tr><td>Neuer Such-Tab</td><td><kbd>Cmd</kbd> + <kbd>T</kbd></td></tr>
+          <tr><td>Tab schließen</td><td><kbd>Cmd</kbd> + <kbd>W</kbd></td></tr>
+          <tr><td>Suche fokussieren</td><td><kbd>Cmd</kbd> + <kbd>F</kbd></td></tr>
+          <tr><td>Waveform-Modus wechseln</td><td><kbd>X</kbd></td></tr>
+          <tr><td>Rückwärts abspielen</td><td><kbd>R</kbd></td></tr>
+          <tr><td>Zufallswiedergabe (Shuffle)</td><td><kbd>S</kbd></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>⚙️ Einstellungen</h2>
+      <div class="feature-card">
+        <p>Klicke auf das <strong>Zahnrad-Icon</strong> oben rechts, um deine App zu konfigurieren:</p>
+        <ul>
+          <li><strong>API-Management:</strong> Hinterlege deinen Freesound-Token für Online-Zugriff.</li>
+          <li><strong>Download-Pfad:</strong> Wähle einen globalen Ordner für alle heruntergeladenen Sounds.</li>
+          <li><strong>Datenschutz:</strong> Aktiviere den Sitzungs-Modus, wenn Keys nicht gespeichert werden sollen.</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      &copy; 2026 SonicFlow &bull; Erstellt von Antigravity
+    </footer>
+  </div>
+</body>
+</html>

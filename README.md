@@ -81,15 +81,39 @@ SonicFlow supports the industry-standard Universal Category System for professio
 ---
 
 ### 🖱️ Drag & Drop to NLEs
-- **Native OS Drag** — drag any file directly from the results table into Avid Media Composer, DaVinci Resolve, Premiere Pro, Reaper, and other NLEs
-- **Drag Handle** — dedicated grip icon per row for precise drag initiation
+- **Multi-Tab Workflow** — run multiple independent search sessions simultaneously
+- **Shuffle Results** — randomize search results for inspiration
+- **Freesound.org Integration** — cloud search (requires API key)
+- **Full Tab State** — search query, all filters, sort order, and scroll position are saved per tab and restored on switch
+- **New Tab** — add a tab via button
 
 ---
 
-### 🗂️ Tabs
-- **Multi-Tab Workflow** — run multiple independent search sessions simultaneously
-- **Full Tab State** — search query, all filters, sort order, and scroll position are saved per tab and restored on switch
-- **New Tab** — add a tab via button
+### 📂 Sammlungen (Collections)
+- **Virtual Folders** — organize sounds into collections without moving them on disk
+- **Add via Context Menu** — right-click any sound to add it to one or more collections
+- **Persistent Storage** — collections are saved in the local database
+
+---
+
+### 📊 Waveform & Spectrogram
+- **Spectrogram View** — switch to a frequency-over-time visualization
+- **Three Waveform Render Modes:**
+  - **Classic** — symmetric amplitude waveform
+  - **Histogram** — bar-chart waveform
+  - **Symmetric X-Ray** — mirrored, translucent view
+
+---
+
+### 🖥️ Dock Mode
+- **Compact Player View** — shrink the UI to a minimal player bar for single-monitor setups
+- **Always on Top** — keep SonicFlow visible while working in your DAW
+
+---
+
+### 🖱️ Drag & Drop & Context Menu
+- **Native OS Drag** — drag any file directly from the results table into Avid Media Composer, DaVinci Resolve, Premiere Pro, Reaper, and other NLEs
+- **Context Menu** — right-click for "Open in Default App", "Reveal in Finder", or "Add to Collection"
 
 ---
 

@@ -55,6 +55,7 @@ pub struct SearchFilters {
     pub bitdepth: Option<i64>,
     pub channels: Option<i64>,
     pub ucs_cat_id: Option<String>,
+    pub shuffle: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -178,6 +179,20 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute_batch(&format!("ALTER TABLE sounds ADD COLUMN {} TEXT", col)).ok();
         }
     }
+
+    // Collections tables
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS collection_sounds (
+            collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+            sound_id INTEGER NOT NULL REFERENCES sounds(id) ON DELETE CASCADE,
+            PRIMARY KEY (collection_id, sound_id)
+        );
+    ")?;
 
     Ok(())
 }
@@ -423,6 +438,12 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
              s.tag_bpm, s.tag_description, s.tag_keywords, s.tag_tracknumber, s.imported_at,
              s.ucs_cat_id, s.ucs_fx_name, s.ucs_creator_id, s.ucs_source_id, s.ucs_user_category";
 
+    let order_by = if filters.shuffle.unwrap_or(false) {
+        "RANDOM()"
+    } else {
+        "s.filename"
+    };
+
     let sql = if use_fts {
         let fts_query = format!("{}*", trimmed.replace('"', "\"\""));
         params_vec.insert(0, Box::new(fts_query));
@@ -433,8 +454,8 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
         };
         format!(
             "SELECT {} FROM sounds_fts fts JOIN sounds s ON s.id = fts.rowid
-             WHERE sounds_fts MATCH ? {} ORDER BY s.filename LIMIT 2000",
-            sel_cols, where_clause
+             WHERE sounds_fts MATCH ? {} ORDER BY {} LIMIT 2000",
+            sel_cols, where_clause, order_by
         )
     } else {
         let where_clause = if conditions.is_empty() {
@@ -443,8 +464,8 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
             format!("WHERE {}", conditions.join(" AND "))
         };
         format!(
-            "SELECT {} FROM sounds s {} ORDER BY filename LIMIT 2000",
-            sel_cols, where_clause
+            "SELECT {} FROM sounds s {} ORDER BY {} LIMIT 2000",
+            sel_cols, where_clause, order_by
         )
     };
 
@@ -484,6 +505,120 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
         })?
         .collect::<Result<Vec<_>>>()?;
     Ok(sounds)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: i64,
+    pub name: String,
+    pub created_at: String,
+    pub count: i64,
+}
+
+pub fn create_collection(conn: &Connection, name: &str, now: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO collections (name, created_at) VALUES (?1, ?2)",
+        params![name, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn fetch_collections(conn: &Connection) -> Result<Vec<Collection>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.name, c.created_at, COUNT(cs.sound_id)
+         FROM collections c
+         LEFT JOIN collection_sounds cs ON c.id = cs.collection_id
+         GROUP BY c.id
+         ORDER BY c.name",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Collection {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            created_at: row.get(2)?,
+            count: row.get(3)?,
+        })
+    })?;
+    let mut collections = Vec::new();
+    for r in rows {
+        collections.push(r?);
+    }
+    Ok(collections)
+}
+
+pub fn delete_collection(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+pub fn add_to_collection(conn: &Connection, collection_id: i64, sound_id: i64) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO collection_sounds (collection_id, sound_id) VALUES (?1, ?2)",
+        params![collection_id, sound_id],
+    )?;
+    Ok(())
+}
+
+pub fn remove_from_collection(conn: &Connection, collection_id: i64, sound_id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM collection_sounds WHERE collection_id = ?1 AND sound_id = ?2",
+        params![collection_id, sound_id],
+    )?;
+    Ok(())
+}
+
+pub fn query_collection_sounds(conn: &Connection, collection_id: i64) -> Result<Vec<Sound>> {
+    let sel_cols = "s.id, s.library_id, s.filename, s.filepath, s.relative_folder, s.extension, s.filesize,
+             s.duration, s.samplerate, s.bitdepth, s.channels, s.bitrate,
+             s.tag_title, s.tag_artist, s.tag_album, s.tag_comment, s.tag_genre,
+             s.tag_bpm, s.tag_description, s.tag_keywords, s.tag_tracknumber, s.imported_at,
+             s.ucs_cat_id, s.ucs_fx_name, s.ucs_creator_id, s.ucs_source_id, s.ucs_user_category";
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM sounds s
+         JOIN collection_sounds cs ON s.id = cs.sound_id
+         WHERE cs.collection_id = ?1
+         ORDER BY s.filename",
+        sel_cols
+    ))?;
+
+    let sounds = stmt.query_map(params![collection_id], |row| {
+        Ok(Sound {
+            id: row.get(0)?,
+            library_id: row.get(1)?,
+            filename: row.get(2)?,
+            filepath: row.get(3)?,
+            relative_folder: row.get(4)?,
+            extension: row.get(5)?,
+            filesize: row.get(6)?,
+            duration: row.get(7)?,
+            samplerate: row.get(8)?,
+            bitdepth: row.get(9)?,
+            channels: row.get(10)?,
+            bitrate: row.get(11)?,
+            tag_title: row.get(12)?,
+            tag_artist: row.get(13)?,
+            tag_album: row.get(14)?,
+            tag_comment: row.get(15)?,
+            tag_genre: row.get(16)?,
+            tag_bpm: row.get(17)?,
+            tag_description: row.get(18)?,
+            tag_keywords: row.get(19)?,
+            tag_tracknumber: row.get(20)?,
+            imported_at: row.get(21)?,
+            ucs_cat_id: row.get(22)?,
+            ucs_fx_name: row.get(23)?,
+            ucs_creator_id: row.get(24)?,
+            ucs_source_id: row.get(25)?,
+            ucs_user_category: row.get(26)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for s in sounds {
+        result.push(s?);
+    }
+    Ok(result)
 }
 
 /// Persist a manually assigned UCS user category (never overwritten by scanner).

@@ -4,6 +4,7 @@ import { UCS_CAT_IDS, UCS_CAT_ID_MAP } from './ucs_data.js';
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { open } = window.__TAURI__.dialog;
 const { open: openPath } = window.__TAURI__.shell;
+const { WebviewWindow } = window.__TAURI__.webviewWindow;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let libraries   = [];
@@ -29,9 +30,17 @@ let isDraggingWf = false;
 let startDragX = 0;
 let startDragPan = 0;
 
+let isShuffle = false;
+let isDockMode = false;
+let isSpectrogram = false;
+let collections = [];
+let activeCollectionId = null;
+let freesoundMode = false;
+
 // Tabs State
 let tabs = [];
 let activeTabId = null;
+let sessionApiKey = null; // Memory-only storage for the current session
 
 function createTab() {
   const tab = {
@@ -99,16 +108,27 @@ const btnStop         = $('btn-stop');
 const volumeSlider    = $('volume-slider');
 const gainSlider      = $('gain-slider');
 const gainValueLabel  = $('gain-value');
-const btnReverse      = $('btn-reverse');
 const audioOutputSelect = $('audio-output-select');
 const btnOpenFile     = $('btn-open-file');
-const btnXRay         = $('btn-xray');
+const btnXray         = $('btn-xray');
+const btnReverse      = $('btn-reverse');
 const waveformCanvas  = $('waveform-canvas');
 const waveformPlayhead = $('waveform-playhead');
 const waveformContainer = $('waveform-container');
 const playerResizer   = $('player-resizer');
 const filterBitdepth  = $('filter-bitdepth');
 const filterUcsCat    = $('filter-ucs-cat');
+
+const btnShuffle      = $('btn-shuffle');
+const btnDockMode     = $('btn-dock-mode');
+const btnAddCollection = $('btn-add-collection');
+const collectionsList  = $('collections-list');
+const btnFreesoundSearch = $('btn-freesound-search');
+const contextMenu      = $('context-menu');
+const contextMenuList  = $('context-menu-list');
+const btnExitDock     = $('btn-exit-dock');
+const newCollectionContainer = $('new-collection-container');
+const inputNewCollection     = $('input-new-collection');
 
 // ─── Column Definitions ──────────────────────────────────────────────────────
 const COLS = [
@@ -164,8 +184,149 @@ async function init() {
 
   initColumns();
   initAudioDevices();
+  initExtraListeners();
   await loadLibraries();
+  await loadCollections();
   if (libraries.length > 0) await runSearch();
+}
+
+function initExtraListeners() {
+  btnShuffle?.addEventListener('click', () => {
+    isShuffle = !isShuffle;
+    btnShuffle.classList.toggle('active', isShuffle);
+    runSearch();
+  });
+
+  btnDockMode?.addEventListener('click', async () => {
+    isDockMode = !isDockMode;
+    document.body.classList.toggle('docked', isDockMode);
+    await invoke('toggle_dock_mode', { enabled: isDockMode });
+  });
+
+
+
+  btnAddCollection?.addEventListener('click', () => {
+    newCollectionContainer.removeAttribute('hidden');
+    inputNewCollection.focus();
+  });
+
+  inputNewCollection?.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      const name = inputNewCollection.value.trim();
+      if (name) {
+        try {
+          await invoke('create_collection', { name });
+          inputNewCollection.value = '';
+          newCollectionContainer.setAttribute('hidden', '');
+          await loadCollections();
+          showToast(`Sammlung „${name}“ erstellt`, 'success');
+        } catch (err) { showToast('Fehler: ' + err, 'error'); }
+      }
+    } else if (e.key === 'Escape') {
+      newCollectionContainer.setAttribute('hidden', '');
+    }
+  });
+
+  inputNewCollection?.addEventListener('blur', () => {
+    if (!inputNewCollection.value.trim()) {
+      newCollectionContainer.setAttribute('hidden', '');
+    }
+  });
+
+  btnFreesoundSearch?.addEventListener('click', () => {
+    freesoundMode = !freesoundMode;
+    btnFreesoundSearch.classList.toggle('active', freesoundMode);
+    searchInput.placeholder = freesoundMode ? 'Freesound.org durchsuchen …' : 'Suche nach Dateiname, Tags, Keywords …';
+    if (freesoundMode) {
+      allSounds = [];
+      renderResults();
+    } else {
+      runSearch();
+    }
+  });
+
+  btnExitDock?.addEventListener('click', () => {
+    isDockMode = false;
+    document.body.classList.remove('docked');
+    invoke('toggle_dock_mode', { enabled: false });
+  });
+
+  const btnShowHelp = $('btn-show-help');
+  btnShowHelp?.addEventListener('click', () => {
+    invoke('show_help');
+  });
+
+  // Settings Logic
+  const btnSettings = $('btn-settings');
+  const settingsOverlay = $('settings-overlay');
+  const btnCloseSettings = $('btn-close-settings');
+  const btnSaveSettings = $('btn-save-settings');
+  const inputFreesoundKey = $('input-freesound-key');
+  const btnFreesoundInfo = $('btn-freesound-info');
+  const freesoundInstructions = $('freesound-instructions');
+  const checkSessionOnly = $('check-session-only');
+  const inputDownloadPath = $('input-download-path');
+  const btnChooseDownloadPath = $('btn-choose-download-path');
+
+  btnSettings?.addEventListener('click', () => {
+    const savedKey = localStorage.getItem('freesound_api_key');
+    if (savedKey) {
+      inputFreesoundKey.value = savedKey;
+      checkSessionOnly.checked = false;
+    } else {
+      inputFreesoundKey.value = sessionApiKey || '';
+      checkSessionOnly.checked = !!sessionApiKey;
+    }
+    
+    // Load download path
+    inputDownloadPath.value = localStorage.getItem('freesound_download_path') || '';
+    
+    settingsOverlay.removeAttribute('hidden');
+  });
+
+  btnChooseDownloadPath?.addEventListener('click', async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: 'Download-Ordner wählen'
+    });
+    if (selected) {
+      inputDownloadPath.value = selected;
+    }
+  });
+
+  btnFreesoundInfo?.addEventListener('click', () => {
+    freesoundInstructions.toggleAttribute('hidden');
+  });
+
+  btnCloseSettings?.addEventListener('click', () => {
+    settingsOverlay.setAttribute('hidden', '');
+    freesoundInstructions.setAttribute('hidden', '');
+  });
+
+  btnSaveSettings?.addEventListener('click', () => {
+    const key = inputFreesoundKey.value.trim();
+    if (checkSessionOnly.checked) {
+      sessionApiKey = key;
+      localStorage.removeItem('freesound_api_key');
+    } else {
+      localStorage.setItem('freesound_api_key', key);
+      sessionApiKey = null;
+    }
+
+    // Save download path
+    localStorage.setItem('freesound_download_path', inputDownloadPath.value);
+
+    settingsOverlay.setAttribute('hidden', '');
+    showToast('Einstellungen gespeichert', 'success');
+  });
+
+  settingsOverlay?.addEventListener('click', (e) => {
+    if (e.target === settingsOverlay) {
+      settingsOverlay.setAttribute('hidden', '');
+      freesoundInstructions.setAttribute('hidden', '');
+    }
+  });
 }
 
 function updateTableWidth() {
@@ -515,6 +676,53 @@ function closeTab(id) {
 }
 
 // ─── Libraries ───────────────────────────────────────────────────────────────
+// ─── Collections ────────────────────────────────────────────────────────────
+async function loadCollections() {
+  try { 
+    collections = await invoke('get_collections'); 
+    console.log('Collections loaded:', collections);
+  } catch (e) { 
+    console.error('Failed to load collections:', e);
+    collections = []; 
+  }
+  renderCollections();
+}
+
+function renderCollections() {
+  if (!collectionsList) return;
+  collectionsList.innerHTML = '';
+  collections.forEach(c => {
+    const li = document.createElement('li');
+    li.className = 'collection-item' + (activeCollectionId === c.id ? ' active' : '');
+    li.innerHTML = `
+      <span class="collection-icon">📁</span>
+      <span class="collection-name">${escHtml(c.name)}</span>
+      <span class="collection-count">${c.count}</span>
+      <button class="lib-action-btn danger btn-delete-col" title="Sammlung löschen">
+        <svg width="12" height="12" viewBox="0 0 13 13"><path d="M2 3h9M5 3V2h3v1M4 3l.5 7h4L9 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+    `;
+    li.addEventListener('click', e => {
+      if (e.target.closest('.btn-delete-col')) return;
+      activeCollectionId = (activeCollectionId === c.id) ? null : c.id;
+      activeLibId = null; // deactivate lib filter when collection is active
+      activeFolderPath = null;
+      renderCollections();
+      renderLibraryList();
+      runSearch();
+    });
+    li.querySelector('.btn-delete-col').addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!confirm(`Sammlung „${c.name}“ löschen?`)) return;
+      try {
+        await invoke('delete_collection', { id: c.id });
+        if (activeCollectionId === c.id) activeCollectionId = null;
+        loadCollections();
+      } catch (e) { showToast('Fehler: ' + e, 'error'); }
+    });
+    collectionsList.appendChild(li);
+  });
+}
 async function loadLibraries() {
   try { libraries = await invoke('get_libraries'); }
   catch (e) { showToast('Fehler: ' + e.message, 'error'); libraries = []; }
@@ -562,7 +770,8 @@ function renderLibraryList() {
       if (e.target.closest('.lib-action-btn')) return;
       const newId = activeLibId === lib.id ? null : lib.id;
       activeLibId = newId;
-      activeFolderPath = null; // reset folder filter on library switch
+      activeFolderPath = null;
+      activeCollectionId = null; // Reset collection filter when a library is selected
       filterLibrary.value = activeLibId ?? '';
       renderLibraryList();
       if (activeLibId) loadFolderTree(activeLibId);
@@ -587,25 +796,45 @@ function updateFilterLibrarySelect() {
 
 // ─── Import ──────────────────────────────────────────────────────────────────
 async function importLibrary() {
+  console.log('importLibrary called');
   let selectedPath;
-  try { selectedPath = await open({ directory: true, multiple: false, title: 'Ordner auswählen' }); }
-  catch (e) { showToast('Dialog-Fehler', 'error'); return; }
-  if (!selectedPath) return;
-  importOverlay.removeAttribute('hidden');
-  importSubtitle.textContent = `Scanne: ${selectedPath}`;
+  try {
+    if (!open) {
+      console.error('Tauri Dialog Plugin "open" is not available');
+      showToast('Fehler: Dialog-Modul nicht gefunden', 'error');
+      return;
+    }
+    selectedPath = await open({ directory: true, multiple: false, title: 'Ordner auswählen' }); 
+  }
+  catch (e) { 
+    console.error('Dialog selection error:', e);
+    showToast('Dialog-Fehler: ' + e, 'error'); 
+    return; 
+  }
+  
+  if (!selectedPath) {
+    console.log('User cancelled folder selection');
+    return;
+  }
+  
+  console.log('Selected path:', selectedPath);
+  importOverlay?.removeAttribute('hidden');
+  if (importSubtitle) importSubtitle.textContent = `Scanne: ${selectedPath}`;
+  
   try {
     const result = await invoke('import_library', { path: selectedPath });
     showToast(`✓ ${result.imported.toLocaleString('de-DE')} Dateien importiert`, 'success');
     initAudioDevices();
-  await loadLibraries();
+    await loadLibraries();
     activeLibId = result.library.id;
-    filterLibrary.value = activeLibId;
+    if (filterLibrary) filterLibrary.value = activeLibId;
     renderLibraryList();
     await runSearch();
   } catch (e) {
+    console.error('Import error:', e);
     showToast('Import fehlgeschlagen: ' + (e.message || e), 'error');
   } finally {
-    importOverlay.setAttribute('hidden', '');
+    importOverlay?.setAttribute('hidden', '');
   }
 }
 
@@ -616,7 +845,7 @@ async function refreshLibrary(id) {
     const r = await invoke('refresh_library', { libraryId: id });
     showToast(`✓ ${r.imported.toLocaleString('de-DE')} Dateien aktualisiert`, 'success');
     initAudioDevices();
-  await loadLibraries(); await runSearch();
+    await loadLibraries(); await runSearch();
   } catch (e) { showToast('Fehler: ' + (e.message || e), 'error'); }
   finally { importOverlay.setAttribute('hidden', ''); }
 }
@@ -650,9 +879,28 @@ async function runSearch() {
     bitdepth:   filterBitdepth.value   ? parseInt(filterBitdepth.value)   : null,
     channels:   filterChannels.value   ? parseInt(filterChannels.value)   : null,
     ucs_cat_id: filterUcsCat.value || null,
+    shuffle:    isShuffle,
   };
-  try { allSounds = await invoke('search_sounds', { query, filters }); }
-  catch (e) { showToast('Suchfehler: ' + e, 'error'); allSounds = []; }
+  try { 
+    if (freesoundMode) {
+      if (!query.trim()) {
+        allSounds = [];
+      } else {
+        const apiKey = localStorage.getItem('freesound_api_key') || sessionApiKey;
+        const results = await invoke('search_freesound', { query, apiKey });
+        // Preserve the original URL for redownloads
+        results.forEach(s => s.originalUrl = s.filepath);
+        allSounds = results;
+      }
+    } else if (activeCollectionId) {
+      allSounds = await invoke('get_collection_sounds', { collectionId: activeCollectionId });
+    } else {
+      allSounds = await invoke('search_sounds', { query, filters }); 
+    }
+  } catch (e) { 
+    showToast('Suchfehler: ' + e, 'error'); 
+    allSounds = []; 
+  }
   
   const tab = getActiveTab();
   if (tab) tab.query = query;
@@ -683,9 +931,10 @@ function renderResults() {
 
 function buildRow(sound) {
   const tr = document.createElement('tr');
-  tr.dataset.filepath = sound.filepath;
+  const path = sound.filepath || '';
+  tr.dataset.filepath = path;
   tr.setAttribute('draggable', 'true');
-  if (currentFile === sound.filepath) tr.classList.add('playing');
+  if (currentFile === path) tr.classList.add('playing');
 
   const pills = [];
   if (sound.tag_title)   pills.push(`<span class="tag-pill title" title="${escHtml(sound.tag_title)}">${escHtml(truncate(sound.tag_title,20))}</span>`);
@@ -713,17 +962,28 @@ function buildRow(sound) {
     <td class="col-ucs">${buildUcsPill(sound)}</td>
     <td class="col-size cell-mono">${formatSize(sound.filesize)}</td>
     <td class="col-drag">
-      <div class="btn-drag-handle" title="In NLE ziehen" aria-label="Datei in NLE ziehen">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <circle cx="4" cy="3" r="1.2" fill="currentColor"/><circle cx="10" cy="3" r="1.2" fill="currentColor"/>
-          <circle cx="4" cy="7" r="1.2" fill="currentColor"/><circle cx="10" cy="7" r="1.2" fill="currentColor"/>
-          <circle cx="4" cy="11" r="1.2" fill="currentColor"/><circle cx="10" cy="11" r="1.2" fill="currentColor"/>
-        </svg>
+      <div style="display: flex; gap: 4px; align-items: center;">
+        ${(sound.filepath.startsWith('http') || sound.originalUrl) ? `
+          <button class="btn-download" title="Download für Drag & Drop" aria-label="Download">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          </button>
+        ` : ''}
+        <div class="btn-drag-handle" title="In NLE ziehen" aria-label="Datei in NLE ziehen">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <circle cx="4" cy="3" r="1.2" fill="currentColor"/><circle cx="10" cy="3" r="1.2" fill="currentColor"/>
+            <circle cx="4" cy="7" r="1.2" fill="currentColor"/><circle cx="10" cy="7" r="1.2" fill="currentColor"/>
+            <circle cx="4" cy="11" r="1.2" fill="currentColor"/><circle cx="10" cy="11" r="1.2" fill="currentColor"/>
+          </svg>
+        </div>
       </div>
     </td>`;
 
   tr.querySelector('.btn-row-play').addEventListener('click', e => { e.stopPropagation(); togglePlay(sound); });
-  tr.addEventListener('click', e => { if (!e.target.closest('.btn-drag-handle') && !e.target.closest('.row-waveform') && !e.target.closest('.ucs-pill-btn')) togglePlay(sound); });
+  tr.addEventListener('click', e => { 
+    if (!e.target.closest('.btn-drag-handle') && !e.target.closest('.row-waveform') && !e.target.closest('.ucs-pill-btn')) {
+      togglePlay(sound); 
+    }
+  });
   tr.querySelector('.row-waveform').addEventListener('click', e => e.stopPropagation());
 
   // ── UCS inline tagging ──
@@ -735,26 +995,182 @@ function buildRow(sound) {
     });
   }
 
-  // ── Native Drag & Drop to NLEs ──
-  tr.addEventListener('dragstart', e => {
-    e.preventDefault(); // Let Tauri handle the native OS drag operation
-    
-    // We must mimic the exact payload of the official JS plugin wrapper
+  // ── Native Drag & Drop ──
+  tr.addEventListener('dragstart', async e => {
+    if (sound.filepath.startsWith('http')) {
+      e.preventDefault();
+      showToast('Sound muss erst heruntergeladen werden!', 'warning');
+      return;
+    }
+    e.preventDefault();
     const { Channel } = window.__TAURI__.core;
     const onEventChannel = new Channel();
-    
     invoke('plugin:drag|start_drag', {
       item: [sound.filepath],
       image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
       options: { mode: 'copy' },
       onEvent: onEventChannel
-    }).catch(err => {
-      console.error(err);
-      showToast('Drag Fehler: ' + String(err), 'error');
+    }).catch(err => showToast('Drag Fehler: ' + err, 'error'));
+  });
+
+  // ── Download Handler ──
+  const btnDownload = tr.querySelector('.btn-download');
+  if (btnDownload) {
+    btnDownload.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      btnDownload.classList.add('loading');
+      const targetUrl = sound.originalUrl || sound.filepath;
+      try {
+        const targetDir = localStorage.getItem('freesound_download_path') || null;
+        const localPath = await invoke('download_sound', { 
+          url: targetUrl, 
+          filename: sound.filename,
+          targetDir
+        });
+        sound.filepath = localPath; // Update object in memory
+        tr.dataset.filepath = localPath;
+        
+        // Show success icon briefly, then return to normal or keep it green
+        btnDownload.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        btnDownload.classList.remove('loading');
+        btnDownload.classList.add('success');
+        btnDownload.title = "Erneut herunterladen";
+        
+        showToast('Download erfolgreich!', 'success');
+
+        // Optional: After 3 seconds, reset the icon but keep it green to show it's local
+        setTimeout(() => {
+          btnDownload.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
+        }, 3000);
+      } catch (err) {
+        btnDownload.classList.remove('loading');
+        showToast('Download Fehler: ' + err, 'error');
+      }
     });
+  }
+
+  // ── Context Menu ──
+  tr.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY, [
+      { label: 'Im Finder anzeigen', icon: '📂', action: () => invoke('open_in_finder', { path: sound.filepath }) },
+      { label: 'In Standard-App öffnen', icon: '🚀', action: () => invoke('open_with_app', { path: sound.filepath, app: null }) },
+      { separator: true },
+      { label: 'Zu Sammlung hinzufügen...', icon: '➕', action: () => openAddToCollectionMenu(e.clientX, e.clientY, sound) },
+      { separator: true },
+      { label: 'Metadaten bearbeiten (UCS)', icon: '🏷️', action: () => openUcsTagDialog(sound, tr.querySelector('.ucs-pill-btn')) }
+    ]);
   });
 
   return tr;
+}
+
+function showContextMenu(x, y, items) {
+  contextMenuList.innerHTML = '';
+  items.forEach(item => {
+    if (item.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'context-menu-separator';
+      contextMenuList.appendChild(sep);
+      return;
+    }
+    const li = document.createElement('li');
+    li.className = 'context-menu-item';
+    li.innerHTML = `<span class="context-icon">${item.icon || ''}</span> <span class="context-label">${item.label}</span>`;
+    li.addEventListener('click', async e => {
+      e.stopPropagation();
+      const preventHide = await item.action(li);
+      if (preventHide !== true) hideContextMenu();
+    });
+    contextMenuList.appendChild(li);
+  });
+
+  contextMenu.style.left = `${x}px`;
+  contextMenu.style.top = `${y}px`;
+  contextMenu.removeAttribute('hidden');
+
+  const onOutsideClick = (e) => {
+    if (!contextMenu.contains(e.target)) {
+      hideContextMenu();
+      document.removeEventListener('mousedown', onOutsideClick);
+    }
+  };
+  setTimeout(() => document.addEventListener('mousedown', onOutsideClick), 10);
+}
+
+function hideContextMenu() {
+  contextMenu.setAttribute('hidden', '');
+}
+
+async function openAddToCollectionMenu(x, y, sound) {
+  const items = collections.map(c => ({
+    label: c.name,
+    icon: '📁',
+    action: async () => {
+      try {
+        await invoke('add_to_collection', { collectionId: c.id, soundId: sound.id });
+        showToast(`Zu „${c.name}“ hinzugefügt`, 'success');
+        loadCollections();
+      } catch (e) { showToast('Fehler: ' + e, 'error'); }
+    }
+  }));
+  
+  if (items.length === 0) {
+    items.push({ label: 'Keine Sammlungen vorhanden', icon: '⚠️', action: () => {} });
+  }
+  
+  showContextMenu(x, y, [
+    { label: 'Zurück', icon: '⬅️', action: () => { 
+        // Re-open main context menu
+        showContextMenu(x, y, [
+          { label: 'Im Finder anzeigen', icon: '📂', action: () => invoke('open_in_finder', { path: sound.filepath }) },
+          { label: 'In Standard-App öffnen', icon: '🚀', action: () => invoke('open_with_app', { path: sound.filepath, app: null }) },
+          { separator: true },
+          { label: 'Zu Sammlung hinzufügen...', icon: '➕', action: () => openAddToCollectionMenu(x, y, sound) },
+          { separator: true },
+          { label: 'Metadaten bearbeiten (UCS)', icon: '🏷️', action: () => openUcsTagDialog(sound, null) }
+        ]);
+        return true; // prevent hide
+    } },
+    { separator: true },
+    { label: 'Neue Sammlung...', icon: '✨', action: (li) => {
+        // Replace LI content with an input field
+        li.innerHTML = `
+          <input type="text" id="ctx-new-coll-input" placeholder="Name..." 
+            style="width: 100%; background: var(--bg-hover); border: 1px solid var(--accent-violet); color: white; padding: 4px 8px; border-radius: 4px; outline: none; font-size: 12px;" />
+        `;
+        const input = li.querySelector('input');
+        input.focus();
+        
+        input.addEventListener('keydown', async (e) => {
+          if (e.key === 'Enter') {
+            const name = input.value.trim();
+            if (name) {
+              try {
+                await invoke('create_collection', { name });
+                const all = await invoke('get_collections');
+                const created = all.find(c => c.name === name);
+                if (created) {
+                  await invoke('add_to_collection', { collectionId: created.id, soundId: sound.id });
+                  showToast(`Sammlung „${name}“ erstellt`, 'success');
+                  loadCollections();
+                  hideContextMenu();
+                }
+              } catch (err) { showToast('Fehler: ' + err, 'error'); }
+            }
+          } else if (e.key === 'Escape') {
+            openAddToCollectionMenu(x, y, sound);
+          }
+        });
+        
+        input.addEventListener('click', e => e.stopPropagation());
+        
+        return true; // prevent immediate hide
+    } },
+    { separator: true },
+    ...items
+  ]);
+  return true; // prevent hide
 }
 
 // ─── Folder Tree ──────────────────────────────────────────────────────────────
@@ -850,7 +1266,7 @@ function getGainDb(sliderVal) {
 function playSound(sound) {
   currentFile = sound.filepath;
   // Use Tauri's asset:// protocol – file:// is blocked by the WebView CSP
-  const assetUrl = convertFileSrc(sound.filepath);
+  const assetUrl = sound.filepath.startsWith('http') ? sound.filepath : convertFileSrc(sound.filepath);
   currentAssetUrl = assetUrl;
 
   // Clean up any leftover reverse blob from a previous file
@@ -868,7 +1284,6 @@ function playSound(sound) {
     formatChannels(sound.channels),
     formatSize(sound.filesize),
   ].filter(Boolean).join(' · ');
-  playerBar.removeAttribute('hidden');
   btnOpenFile.dataset.filepath = sound.filepath;
 
   // Reset reverse state when a new file is loaded
@@ -878,6 +1293,31 @@ function playSound(sound) {
 
   drawWaveform(assetUrl);
   renderResults();
+}
+
+function getMagmaColor(v) {
+  // v: 0.0 to 1.0 (Magma-like colormap)
+  const c = [
+    [0, 0, 4],       // 0.0 (Dark blue/black)
+    [30, 10, 60],    // 0.2
+    [100, 20, 100],  // 0.4
+    [220, 40, 60],   // 0.6
+    [255, 180, 20],  // 0.8
+    [255, 255, 180]  // 1.0 (Light yellow/white)
+  ];
+  const stops = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+  if (v <= 0) return `rgb(${c[0][0]},${c[0][1]},${c[0][2]})`;
+  if (v >= 1) return `rgb(${c[5][0]},${c[5][1]},${c[5][2]})`;
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (v >= stops[i] && v <= stops[i+1]) {
+      const t = (v - stops[i]) / (stops[i+1] - stops[i]);
+      const r = Math.floor(c[i][0] + (c[i+1][0] - c[i][0]) * t);
+      const g = Math.floor(c[i][1] + (c[i+1][1] - c[i][1]) * t);
+      const b = Math.floor(c[i][2] + (c[i+1][2] - c[i][2]) * t);
+      return `rgb(${r},${g},${b})`;
+    }
+  }
+  return 'rgb(0,0,0)';
 }
 
 // ─── Waveform ────────────────────────────────────────────────────────────────
@@ -918,28 +1358,41 @@ function renderWaveform() {
   if (!waveformData) return;
   const ctx = waveformCanvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
-  const W = waveformCanvas.offsetWidth || 400;
-  const H = waveformCanvas.offsetHeight || 48;
-  waveformCanvas.width  = W * dpr;
-  waveformCanvas.height = H * dpr;
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, W, H);
+  
+  // Use client dimensions for logical units
+  const wLogical = waveformCanvas.clientWidth || 400;
+  const hLogical = waveformCanvas.clientHeight || 80;
+  
+  // Set physical buffer size
+  waveformCanvas.width  = Math.round(wLogical * dpr);
+  waveformCanvas.height = Math.round(hLogical * dpr);
+  
+  // Clean start
+  ctx.setTransform(1, 0, 0, 1, 0, 0); 
+  ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+  
+  // We work in physical pixels for 100% precision
+  const W = waveformCanvas.width;
+  const H = waveformCanvas.height;
+  const midY = H / 2;
+  const drawPadding = 10 * dpr; // 10px padding top/bottom
+  const drawH = H - (drawPadding * 2);
 
-  // Use reversed data when reverse mode is active
   const data = isReversed && reversedData ? reversedData : waveformData;
   const totalSamples = data.length;
   const visibleSamples = Math.floor(totalSamples / wfZoom);
   const startSample = Math.floor(wfPan * (totalSamples - visibleSamples));
-  const step = Math.max(1, Math.floor(visibleSamples / W));
+  const step = Math.max(1, visibleSamples / W);
 
+  // Gradient for Mode 0
   const grad = ctx.createLinearGradient(0, 0, W, 0);
   grad.addColorStop(0, '#7c6fff');
   grad.addColorStop(1, '#00d4ff');
 
+  // FFT Setup for X-Ray
   let fftSize = 1024;
   let fft = (wfMode > 0) ? new FFT(fftSize) : null;
   let fftInput = (wfMode > 0) ? new Float32Array(fftSize) : null;
-  
   let bassBin = 0, midBin = 0;
   if (wfMode > 0) {
     const binSize = currentSampleRate / fftSize;
@@ -948,67 +1401,54 @@ function renderWaveform() {
   }
 
   for (let x = 0; x < W; x++) {
-    let min = 1, max = -1;
-    const sampleIdx = startSample + (x * step);
-    for (let i = 0; i < step && (sampleIdx + i) < totalSamples; i++) {
-      const v = data[sampleIdx + i] || 0;
-      if (v < min) min = v;
-      if (v > max) max = v;
+    const sampleIdx = Math.floor(startSample + (x * step));
+    let min = 0, max = 0;
+    
+    // Peak finding for this pixel column
+    for (let i = 0; i < Math.max(1, step); i++) {
+      const val = data[sampleIdx + i] || 0;
+      if (val < min) min = val;
+      if (val > max) max = val;
     }
 
+    const amp = Math.max(Math.abs(min), Math.abs(max));
     let r=0, g=0, b=0;
-    if (wfMode > 0) {
-      const centerIdx = sampleIdx + Math.floor(step / 2);
-      const windowStart = centerIdx - (fftSize / 2);
+
+    if (wfMode > 0 && fft) {
+      const windowStart = sampleIdx - (fftSize / 2);
       for (let i = 0; i < fftSize; i++) {
         let idx = windowStart + i;
-        if (idx < 0) idx = 0;
-        if (idx >= totalSamples) idx = totalSamples - 1;
-        fftInput[i] = data[idx];
+        fftInput[i] = (idx >= 0 && idx < totalSamples) ? data[idx] : 0;
       }
-      
       applyHanningWindow(fftInput);
       const mags = fft.forward(fftInput);
-      
-      let energyBass = 0, energyMids = 0, energyHighs = 0;
-      for (let i = 0; i < mags.length; i++) {
-        if (i <= bassBin) energyBass += mags[i];
-        else if (i <= midBin) energyMids += mags[i];
-        else energyHighs += mags[i];
+      let eB=0, eM=0, eH=0;
+      for (let i=0; i<mags.length; i++){
+        if (i <= bassBin) eB += mags[i];
+        else if (i <= midBin) eM += mags[i];
+        else eH += mags[i];
       }
-      
-      energyBass *= 2.0; 
-      energyMids *= 1.5;
-      energyHighs *= 6.0; 
-
-      const sum = energyBass + energyMids + energyHighs + 0.0001;
-      r = Math.min(255, Math.floor((energyBass / sum) * 255 * 1.5));
-      g = Math.min(255, Math.floor((energyMids / sum) * 255 * 1.5));
-      b = Math.min(255, Math.floor((energyHighs / sum) * 255 * 1.5));
+      const sum = eB + eM + eH + 0.0001;
+      r = Math.min(255, (eB/sum) * 255 * 1.5);
+      g = Math.min(255, (eM/sum) * 255 * 1.5);
+      b = Math.min(255, (eH/sum) * 255 * 1.5);
     }
-    
+
     if (wfMode === 0) {
-      // A: Classic Symmetric
       ctx.fillStyle = grad;
-      const y1 = ((1 - max) / 2) * H;
-      const y2 = ((1 - min) / 2) * H;
-      ctx.fillRect(x, y1, 1, Math.max(1, y2 - y1));
+      const h = amp * drawH;
+      ctx.fillRect(x, midY - (h/2), 1, Math.max(1, h));
     } else if (wfMode === 1) {
-      // B: Spectral Histogram (Bottom to Top)
-      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-      const amplitude = Math.max(Math.abs(min), Math.abs(max));
-      const hBar = amplitude * H;
-      ctx.fillRect(x, H - hBar, 1, Math.max(1, hBar));
-    } else if (wfMode === 2) {
-      // A+B: Spectral Symmetric
-      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-      const y1 = ((1 - max) / 2) * H;
-      const y2 = ((1 - min) / 2) * H;
-      ctx.fillRect(x, y1, 1, Math.max(1, y2 - y1));
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      const h = amp * drawH;
+      ctx.fillRect(x, midY - (h/2), 1, Math.max(1, h));
+    } else {
+      // Histogram
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      const h = amp * drawH;
+      ctx.fillRect(x, drawPadding + drawH - h, 1, Math.max(1, h));
     }
   }
-
-  // Removed buggy reflection rendering completely!
 
   updatePlayhead();
 }
@@ -1045,8 +1485,9 @@ audioEl.addEventListener('ended', () => {
 
 btnPlayPause.addEventListener('click', () => { if (audioEl.paused) audioEl.play(); else audioEl.pause(); });
 btnStop.addEventListener('click', () => {
-  audioEl.pause(); audioEl.currentTime = 0; currentFile = null;
-  playerBar.setAttribute('hidden',''); renderResults();
+  audioEl.pause(); 
+  audioEl.currentTime = 0; 
+  updatePlayhead(0);
 });
 volumeSlider.addEventListener('input', e => { audioEl.volume = e.target.value; });
 btnOpenFile.addEventListener('click', async () => {
@@ -1056,14 +1497,9 @@ btnOpenFile.addEventListener('click', async () => {
 });
 
 
-btnXRay.addEventListener('click', () => {
-  wfMode = (wfMode + 1) % 3;
-  btnXRay.classList.toggle('active', wfMode > 0);
-  
-  if (wfMode === 0) showToast('A: Classic Waveform', 'info');
-  else if (wfMode === 1) showToast('B: Spectral Histogram', 'info');
-  else if (wfMode === 2) showToast('A+B: Spectral Symmetric', 'info');
-  
+btnXray.addEventListener('click', () => {
+  wfMode = (wfMode + 1) % 3; // 0: Classic, 1: X-Ray Symmetric, 2: X-Ray Histogram
+  btnXray.classList.toggle('active', wfMode > 0);
   renderWaveform();
 });
 
@@ -1272,7 +1708,7 @@ if (playerResizer) {
     if (!isResizingPlayer) return;
     const dy = startPlayerY - e.clientY; // drag up = increase height
     let newH = startPlayerH + dy;
-    newH = Math.max(70, Math.min(800, newH));
+    newH = Math.max(140, Math.min(800, newH));
     document.documentElement.style.setProperty('--player-h', newH + 'px');
     if (waveformData) renderWaveform();
   });
@@ -1293,7 +1729,7 @@ document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'w') { e.preventDefault(); closeTab(activeTabId); }
   if (e.key.toLowerCase() === 'x' && document.activeElement.tagName !== 'INPUT' && currentFile) {
     e.preventDefault();
-    btnXRay.click();
+    btnXray.click();
   }
   if (e.key.toLowerCase() === 'r' && document.activeElement.tagName !== 'INPUT' && currentFile) {
     e.preventDefault();
@@ -1307,10 +1743,10 @@ document.addEventListener('keydown', e => {
 
 // ─── Event Listeners ────────────────────────────────────────────────────────
 if (btnNewTab) btnNewTab.addEventListener('click', addNewTab);
-btnAddLibrary.addEventListener('click',  importLibrary);
-btnAddLibrary2.addEventListener('click', importLibrary);
-searchInput.addEventListener('input', scheduleSearch);
-filterLibrary.addEventListener('change', () => {
+btnAddLibrary?.addEventListener('click',  importLibrary);
+btnAddLibrary2?.addEventListener('click', importLibrary);
+if (searchInput) searchInput.addEventListener('input', scheduleSearch);
+filterLibrary?.addEventListener('change', () => {
   activeLibId = filterLibrary.value ? parseInt(filterLibrary.value) : null;
   activeFolderPath = null;
   renderLibraryList();
@@ -1326,8 +1762,9 @@ filterUcsCat.addEventListener('change',     runSearch);
 btnClearFilters.addEventListener('click', () => {
   filterExt.value = ''; filterChannels.value = ''; filterSamplerate.value = '';
   filterBitdepth.value = ''; filterUcsCat.value = ''; filterLibrary.value = '';
-  activeLibId = null; activeFolderPath = null;
+  activeLibId = null; activeFolderPath = null; activeCollectionId = null;
   renderLibraryList();
+  renderCollections();
   folderTreeSection.setAttribute('hidden','');
   runSearch();
 });
