@@ -1,0 +1,113 @@
+name: Release Build
+
+# Trigger: runs when you push a version tag like "v1.0.0"
+# Also can be triggered manually from the GitHub Actions UI
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:   # Manual trigger via GitHub UI
+
+permissions:
+  contents: write      # Needed to create/upload releases
+  pull-requests: write # Optional but good for automation
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # If one platform fails, the others continue
+      matrix:
+        include:
+          # ─── macOS: Universal Binary (Apple Silicon + Intel) ────────────────
+          - platform: macos-latest
+            args: '--target universal-apple-darwin --bundles app,dmg'
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+            name: 'macOS Universal'
+
+          # ─── Windows: x64 (Intel/AMD) ───────────────────────────────────────
+          - platform: windows-latest
+            args: '--target x86_64-pc-windows-msvc --bundles msi,nsis'
+            rust-targets: 'x86_64-pc-windows-msvc'
+            name: 'Windows x64'
+
+    runs-on: ${{ matrix.platform }}
+    name: Build ${{ matrix.name }}
+
+    steps:
+      # 1. Check out your repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Install system dependencies (Linux only – not needed for mac/win)
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # 3. Install Rust toolchain + the required cross-compilation targets
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      # 4. Cache Rust build artifacts (speeds up subsequent builds significantly)
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      # 5. Install Node.js (needed for Tauri CLI)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      # 6. Install npm dependencies (Tauri CLI etc.)
+      - name: Install npm dependencies
+        run: npm install
+
+      # 7. Run the Tauri build
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_name }}
+          releaseName: 'SonicFlow ${{ github.ref_name }}'
+          releaseBody: |
+            ## SonicFlow ${{ github.ref_name }}
+
+            ### Downloads
+            - **macOS** (Universal): `.dmg` (Apple Silicon + Intel)
+            - **Windows** (x64): `.msi` (Professional Installer), `.exe` (Standard Installer) oder `.zip` (Portable Version)
+
+            ### Installation
+            - **macOS**: DMG öffnen → App in Programme-Ordner ziehen.
+              *Hinweis: Beim ersten Start Rechtsklick -> Öffnen wählen.*
+            - **Windows**: MSI oder EXE ausführen, oder ZIP entpacken und `sonic-flow.exe` starten.
+          releaseDraft: true
+          prerelease: false
+          includeReleaseAssets: 'SonicFlow_Portable_x64.zip'
+
+      # 8. Create Portable Zip (Windows only) - Run AFTER build so binary exists
+      # Note: We do this only if the previous step succeeded and we are on Windows
+      - name: Package Portable Zip
+        if: matrix.platform == 'windows-latest'
+        run: |
+          cd src-tauri/target/x86_64-pc-windows-msvc/release
+          7z a ../../../../SonicFlow_Portable_x64.zip sonic-flow.exe
+        shell: bash
+
+      # 9. Upload Portable Zip manually (since tauri-action finished)
+      - name: Upload Portable Asset
+        if: matrix.platform == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SonicFlow_Portable_x64.zip
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

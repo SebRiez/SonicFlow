@@ -1,6 +1,6 @@
 [package]
 name = "sonic-flow"
-version = "1.0.6"
+version = "1.0.8"
 description = "SonicFlow – Sound Effect Database"
 authors = ["Antigravity"]
 edition = "2021"

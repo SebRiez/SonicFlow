@@ -49,7 +49,7 @@ pub fn run() {
             let doc_item = MenuItem::with_id(app, "documentation", "SonicFlow Dokumentation", true, None::<&str>)?;
             help_menu.append(&doc_item)?;
             
-            let menu = Menu::with_id(app, "main")?;
+            let menu = Menu::default(app.handle())?;
             menu.append(&help_menu)?;
             app.set_menu(menu)?;
             

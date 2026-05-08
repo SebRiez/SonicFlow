@@ -330,7 +330,7 @@ pub async fn search_freesound(query: String, api_key: Option<String>) -> Result<
     let token = api_key.filter(|k| !k.is_empty())
         .unwrap_or_else(|| "q47MYc1l0Hyrer1rcjKrxo6Ju0baARMTMgWh4C1O".to_string()); 
     let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={}&token={}&fields=id,name,duration,previews,tags,username&page_size=30",
+        "https://freesound.org/apiv2/search/text/?query={}&token={}&fields=id,name,duration,previews,tags,username&page_size=150",
         query, token
     );
 
