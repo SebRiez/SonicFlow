@@ -51,14 +51,29 @@ fn lock_err<T>(e: std::sync::PoisonError<T>) -> AppError {
 /// Scans `path` (without holding the DB lock) and syncs the result into the library in a
 /// single transaction. Manual UCS tags and collection memberships of files that still
 /// exist are preserved.
-fn scan_and_sync(
+async fn scan_and_sync(
     state: &State<'_, AppState>,
     library_id: i64,
     path: &str,
     not_found_msg: &str,
 ) -> Result<ImportResult, AppError> {
+    if !std::path::Path::new(path).is_dir() {
+        // Never prune a library because its folder/drive is temporarily unavailable.
+        return Err(AppError {
+            message: format!("Ordner nicht gefunden (Laufwerk getrennt?): {}", path),
+        });
+    }
     let now = now_iso();
-    let result = scanner::scan_directory(path, library_id, &now);
+    let scan_path = path.to_string();
+    let scan_now = now.clone();
+    // Directory scans are slow and blocking: keep them off the UI/main thread.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        scanner::scan_directory(&scan_path, library_id, &scan_now)
+    })
+    .await
+    .map_err(|e| AppError {
+        message: format!("Scan failed: {}", e),
+    })?;
 
     let mut conn = state.db.lock().map_err(lock_err)?;
     db::sync_library_sounds(&mut conn, library_id, &result.sounds, &now)?;
@@ -78,19 +93,25 @@ fn scan_and_sync(
 }
 
 #[tauri::command]
-pub fn import_library(path: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
+pub async fn import_library(path: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
     let name = std::path::Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(&path)
         .to_string();
 
+    if !std::path::Path::new(&path).is_dir() {
+        return Err(AppError {
+            message: format!("Ordner nicht gefunden: {}", path),
+        });
+    }
+
     let library_id = {
         let conn = state.db.lock().map_err(lock_err)?;
         db::insert_library(&conn, &name, &path, &now_iso())?
     };
 
-    scan_and_sync(&state, library_id, &path, "Library not found after import")
+    scan_and_sync(&state, library_id, &path, "Library not found after import").await
 }
 
 #[tauri::command]
@@ -107,7 +128,7 @@ pub fn remove_library(library_id: i64, state: State<'_, AppState>) -> Result<(),
 }
 
 #[tauri::command]
-pub fn refresh_library(
+pub async fn refresh_library(
     library_id: i64,
     state: State<'_, AppState>,
 ) -> Result<ImportResult, AppError> {
@@ -122,7 +143,7 @@ pub fn refresh_library(
             .path
     };
 
-    scan_and_sync(&state, library_id, &path, "Library not found after refresh")
+    scan_and_sync(&state, library_id, &path, "Library not found after refresh").await
 }
 
 #[tauri::command]
@@ -160,13 +181,17 @@ pub fn open_in_finder(path: String) -> Result<(), AppError> {
         })?;
 
     #[cfg(target_os = "windows")]
-    std::process::Command::new("explorer")
-        .arg("/select,")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| AppError {
-            message: e.to_string(),
-        })?;
+    {
+        use std::os::windows::process::CommandExt;
+        // Explorer needs `/select,"<path>"` as ONE argument; passing it as two arguments
+        // makes it ignore the selection and open the default folder.
+        std::process::Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", path.replace('/', "\\")))
+            .spawn()
+            .map_err(|e| AppError {
+                message: e.to_string(),
+            })?;
+    }
 
     // Linux doesn't have a universal 'reveal file' flag, so we just open the directory
     #[cfg(target_os = "linux")]

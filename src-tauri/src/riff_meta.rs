@@ -5,11 +5,13 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Upper bound for an iXML chunk we are willing to load into memory. Real-world iXML is a
+/// few KB; the limit protects against corrupt headers claiming up to 4 GB.
+const MAX_IXML_BYTES: u64 = 4 * 1024 * 1024;
+
 #[derive(Debug, Default)]
 pub struct BextData {
     pub description: Option<String>,
-    pub originator: Option<String>,
-    pub originator_ref: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -72,7 +74,7 @@ pub fn read_riff_metadata(path: &Path) -> Option<RiffMeta> {
                     let _ = r.seek(SeekFrom::Current(skip as i64));
                 }
             }
-            b"iXML" => {
+            b"iXML" if chunk_size <= MAX_IXML_BYTES => {
                 let mut data = vec![0u8; chunk_size as usize];
                 if r.read_exact(&mut data).is_err() {
                     break;
@@ -111,8 +113,6 @@ fn null_terminated_str(bytes: &[u8]) -> Option<String> {
 fn parse_bext(data: &[u8]) -> BextData {
     BextData {
         description:    null_terminated_str(data.get(0..256).unwrap_or(&[])),
-        originator:     null_terminated_str(data.get(256..288).unwrap_or(&[])),
-        originator_ref: null_terminated_str(data.get(288..320).unwrap_or(&[])),
     }
 }
 

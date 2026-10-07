@@ -23,12 +23,18 @@ pub fn scan_directory(root: &str, library_id: i64, now: &str) -> ScanResult {
     let mut errors = Vec::new();
     let root_path = std::path::Path::new(root);
 
-    for entry in WalkDir::new(root)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
+    for entry in WalkDir::new(root).follow_links(true) {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                // Unreadable directory, symlink loop, ... – report instead of silently skipping
+                errors.push(e.to_string());
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
         let path = entry.path();
         let ext = match path.extension().and_then(|e| e.to_str()) {
             Some(e) => e.to_lowercase(),
@@ -52,7 +58,12 @@ pub fn scan_directory(root: &str, library_id: i64, now: &str) -> ScanResult {
             .unwrap_or_default();
 
         match extract_metadata(path, library_id, &ext, &relative_folder, now) {
-            Ok(sound) => sounds.push(sound),
+            Ok((sound, warning)) => {
+                if let Some(w) = warning {
+                    errors.push(format!("{}: {}", path.display(), w));
+                }
+                sounds.push(sound);
+            }
             Err(e) => errors.push(format!("{}: {}", path.display(), e)),
         }
     }
@@ -66,7 +77,7 @@ fn extract_metadata(
     ext: &str,
     relative_folder: &str,
     now: &str,
-) -> Result<Sound, String> {
+) -> Result<(Sound, Option<String>), String> {
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -74,7 +85,11 @@ fn extract_metadata(
         .to_string();
 
     let filepath = path.to_string_lossy().to_string();
-    let filesize = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+    let filesize = std::fs::metadata(path)
+        .map(|m| m.len() as i64)
+        .map_err(|e| format!("cannot read file: {}", e))?;
+    // The file is still indexed by name when its tags cannot be parsed; the problem is reported.
+    let mut warning: Option<String> = None;
 
     let mut duration: Option<f64> = None;
     let mut samplerate: Option<i64> = None;
@@ -91,10 +106,13 @@ fn extract_metadata(
     let mut tag_keywords: Option<String> = None;
     let mut tag_tracknumber: Option<String> = None;
 
-    if let Ok(tagged_file) = Probe::open(path)
+    let probed = Probe::open(path)
         .map_err(|e| e.to_string())
-        .and_then(|p| p.read().map_err(|e| e.to_string()))
-    {
+        .and_then(|p| p.read().map_err(|e| e.to_string()));
+    if let Err(e) = &probed {
+        warning = Some(format!("metadata could not be read: {}", e));
+    }
+    if let Ok(tagged_file) = probed {
         if let Some(props) = Some(tagged_file.properties()) {
             duration = Some(props.duration().as_secs_f64());
             samplerate = props.sample_rate().map(|v| v as i64);
@@ -127,7 +145,7 @@ fn extract_metadata(
         }
     }
 
-    // ── UCS Extraction (priority: iXML > bext > filename) ──────────────────────
+    // ── UCS Extraction (priority: iXML > filename) ──────────────────────
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     // 1. Filename parser (always attempted, lowest priority)
@@ -140,7 +158,7 @@ fn extract_metadata(
         None
     };
 
-    // Merge fields: iXML > bext > filename
+    // Merge fields: iXML > filename (bext Originator/OriginatorReference are NOT UCS CreatorID/SourceID)
     let ucs_cat_id = riff.as_ref()
         .and_then(|r| r.ixml.as_ref()).and_then(|x| x.ucs_cat_id.clone())
         .or_else(|| from_filename.as_ref().and_then(|f| f.cat_id.clone()));
@@ -151,15 +169,20 @@ fn extract_metadata(
 
     let ucs_creator_id = riff.as_ref()
         .and_then(|r| r.ixml.as_ref()).and_then(|x| x.ucs_creator_id.clone())
-        .or_else(|| riff.as_ref().and_then(|r| r.bext.as_ref()).and_then(|b| b.originator.clone()))
         .or_else(|| from_filename.as_ref().and_then(|f| f.creator_id.clone()));
 
     let ucs_source_id = riff.as_ref()
         .and_then(|r| r.ixml.as_ref()).and_then(|x| x.ucs_source_id.clone())
-        .or_else(|| riff.as_ref().and_then(|r| r.bext.as_ref()).and_then(|b| b.originator_ref.clone()))
         .or_else(|| from_filename.as_ref().and_then(|f| f.source_id.clone()));
 
-    Ok(Sound {
+    // bext "Description" is the closest BWF equivalent of a description tag
+    if tag_description.is_none() {
+        tag_description = riff.as_ref()
+            .and_then(|r| r.bext.as_ref())
+            .and_then(|b| b.description.clone());
+    }
+
+    let sound = Sound {
         id: 0,
         library_id,
         filename,
@@ -187,5 +210,6 @@ fn extract_metadata(
         ucs_creator_id,
         ucs_source_id,
         ucs_user_category: None, // never set by scanner
-    })
+    };
+    Ok((sound, warning))
 }

@@ -486,6 +486,19 @@ fn insert_into_tree(
     }
 }
 
+/// Escapes `%`, `_` and `\\` so a folder name is matched literally inside a LIKE pattern
+/// (used together with `ESCAPE '\\'`).
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Builds a safe FTS5 MATCH expression: every whitespace-separated word becomes a quoted
 /// prefix term (`"word"*`), so FTS operators and punctuation in user input (`-`, `:`, `(`,
 /// `AND`, `NEAR`, ...) are treated as plain text instead of causing syntax errors.
@@ -519,8 +532,8 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
     if let Some(ref folder) = filters.folder {
         if !folder.is_empty() {
             // Match exact folder OR any subfolder under it
-            let prefix = format!("{}/%", folder);
-            conditions.push("(s.relative_folder = ? OR s.relative_folder LIKE ?)".to_string());
+            let prefix = format!("{}/%", escape_like(folder));
+            conditions.push("(s.relative_folder = ? OR s.relative_folder LIKE ? ESCAPE '\\')".to_string());
             params_vec.push(Box::new(folder.clone()));
             params_vec.push(Box::new(prefix));
         } else {
@@ -769,6 +782,27 @@ mod tests {
         assert_eq!(build_fts_query("a:b AND (x").as_deref(), Some("\"a:b\"* \"AND\"* \"(x\"*"));
         assert_eq!(build_fts_query("\"\" - *"), None);
         assert_eq!(build_fts_query("   "), None);
+    }
+
+    #[test]
+    fn folder_filter_treats_wildcards_literally() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let lib = insert_library(&conn, "l", "/l", "t").unwrap();
+        let mut sounds = Vec::new();
+        for (i, folder) in ["My_Folder", "My_Folder/sub", "MyXFolder", "MyXFolder/sub", "100%"].iter().enumerate() {
+            let mut snd = test_sound(lib, &format!("/l/{}.wav", i));
+            snd.relative_folder = folder.to_string();
+            sounds.push(snd);
+        }
+        sync_library_sounds(&mut conn, lib, &sounds, "t").unwrap();
+        let filters = |f: &str| SearchFilters {
+            library_id: None, folder: Some(f.into()), extension: None, min_duration: None,
+            max_duration: None, samplerate: None, bitdepth: None, channels: None,
+            ucs_cat_id: None, shuffle: None,
+        };
+        assert_eq!(query_sounds(&conn, "", &filters("My_Folder")).unwrap().len(), 2);
+        assert_eq!(query_sounds(&conn, "", &filters("100%")).unwrap().len(), 1);
     }
 
     fn test_sound(library_id: i64, path: &str) -> Sound {
