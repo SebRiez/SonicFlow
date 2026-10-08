@@ -29,44 +29,60 @@ fn now_iso() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+/// Freesound search results are not stored in the local database; they carry negative ids
+/// (`-freesound_id`) so they can never be mistaken for a row in `sounds`.
+fn ensure_local_sound(id: i64) -> Result<(), AppError> {
+    if id <= 0 {
+        return Err(AppError {
+            message: "Freesound-Treffer müssen zuerst heruntergeladen und importiert werden.".into(),
+        });
+    }
+    Ok(())
+}
+
 // ─── Tauri Commands ──────────────────────────────────────────────────────────
 
-#[tauri::command]
-pub fn import_library(path: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
-    let conn = state.db.lock().map_err(|e| AppError {
+fn lock_err<T>(e: std::sync::PoisonError<T>) -> AppError {
+    AppError {
         message: e.to_string(),
-    })?;
-    let now = now_iso();
-
-    let name = std::path::Path::new(&path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&path)
-        .to_string();
-
-    let library_id = db::insert_library(&conn, &name, &path, &now)?;
-    db::delete_sounds_for_library(&conn, library_id)?;
-
-    let result = scanner::scan_directory(&path, library_id, &now);
-
-    conn.execute_batch("BEGIN").map_err(|e| AppError {
-        message: e.to_string(),
-    })?;
-    for sound in &result.sounds {
-        db::insert_sound(&conn, sound)?;
     }
-    conn.execute_batch("COMMIT").map_err(|e| AppError {
-        message: e.to_string(),
+}
+
+/// Scans `path` (without holding the DB lock) and syncs the result into the library in a
+/// single transaction. Manual UCS tags and collection memberships of files that still
+/// exist are preserved.
+async fn scan_and_sync(
+    state: &State<'_, AppState>,
+    library_id: i64,
+    path: &str,
+    not_found_msg: &str,
+) -> Result<ImportResult, AppError> {
+    if !std::path::Path::new(path).is_dir() {
+        // Never prune a library because its folder/drive is temporarily unavailable.
+        return Err(AppError {
+            message: format!("Ordner nicht gefunden (Laufwerk getrennt?): {}", path),
+        });
+    }
+    let now = now_iso();
+    let scan_path = path.to_string();
+    let scan_now = now.clone();
+    // Directory scans are slow and blocking: keep them off the UI/main thread.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        scanner::scan_directory(&scan_path, library_id, &scan_now)
+    })
+    .await
+    .map_err(|e| AppError {
+        message: format!("Scan failed: {}", e),
     })?;
 
-    db::update_library_count(&conn, library_id, &now)?;
+    let mut conn = state.db.lock().map_err(lock_err)?;
+    db::sync_library_sounds(&mut conn, library_id, &result.sounds, &now)?;
 
-    let libs = db::fetch_libraries(&conn)?;
-    let library = libs
+    let library = db::fetch_libraries(&conn)?
         .into_iter()
         .find(|l| l.id == library_id)
         .ok_or_else(|| AppError {
-            message: "Library not found after import".into(),
+            message: not_found_msg.into(),
         })?;
 
     Ok(ImportResult {
@@ -77,34 +93,49 @@ pub fn import_library(path: String, state: State<'_, AppState>) -> Result<Import
 }
 
 #[tauri::command]
+pub async fn import_library(path: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&path)
+        .to_string();
+
+    if !std::path::Path::new(&path).is_dir() {
+        return Err(AppError {
+            message: format!("Ordner nicht gefunden: {}", path),
+        });
+    }
+
+    let library_id = {
+        let conn = state.db.lock().map_err(lock_err)?;
+        db::insert_library(&conn, &name, &path, &now_iso())?
+    };
+
+    scan_and_sync(&state, library_id, &path, "Library not found after import").await
+}
+
+#[tauri::command]
 pub fn get_libraries(state: State<'_, AppState>) -> Result<Vec<db::Library>, AppError> {
-    let conn = state.db.lock().map_err(|e| AppError {
-        message: e.to_string(),
-    })?;
+    let conn = state.db.lock().map_err(lock_err)?;
     Ok(db::fetch_libraries(&conn)?)
 }
 
 #[tauri::command]
 pub fn remove_library(library_id: i64, state: State<'_, AppState>) -> Result<(), AppError> {
-    let conn = state.db.lock().map_err(|e| AppError {
-        message: e.to_string(),
-    })?;
-    db::delete_sounds_for_library(&conn, library_id)?;
-    db::delete_library(&conn, library_id)?;
+    let mut conn = state.db.lock().map_err(lock_err)?;
+    db::remove_library_cascade(&mut conn, library_id)?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn refresh_library(
+pub async fn refresh_library(
     library_id: i64,
     state: State<'_, AppState>,
 ) -> Result<ImportResult, AppError> {
     let path = {
-        let conn = state.db.lock().map_err(|e| AppError {
-            message: e.to_string(),
-        })?;
-        let libs = db::fetch_libraries(&conn)?;
-        libs.into_iter()
+        let conn = state.db.lock().map_err(lock_err)?;
+        db::fetch_libraries(&conn)?
+            .into_iter()
             .find(|l| l.id == library_id)
             .ok_or_else(|| AppError {
                 message: "Library not found".into(),
@@ -112,36 +143,7 @@ pub fn refresh_library(
             .path
     };
 
-    let conn = state.db.lock().map_err(|e| AppError {
-        message: e.to_string(),
-    })?;
-    let now = now_iso();
-    db::delete_sounds_for_library(&conn, library_id)?;
-    let result = scanner::scan_directory(&path, library_id, &now);
-    conn.execute_batch("BEGIN").map_err(|e| AppError {
-        message: e.to_string(),
-    })?;
-    for sound in &result.sounds {
-        db::insert_sound(&conn, sound)?;
-    }
-    conn.execute_batch("COMMIT").map_err(|e| AppError {
-        message: e.to_string(),
-    })?;
-    db::update_library_count(&conn, library_id, &now)?;
-
-    let libs = db::fetch_libraries(&conn)?;
-    let library = libs
-        .into_iter()
-        .find(|l| l.id == library_id)
-        .ok_or_else(|| AppError {
-            message: "Library not found after refresh".into(),
-        })?;
-
-    Ok(ImportResult {
-        library,
-        imported: result.sounds.len(),
-        errors: result.errors,
-    })
+    scan_and_sync(&state, library_id, &path, "Library not found after refresh").await
 }
 
 #[tauri::command]
@@ -179,13 +181,17 @@ pub fn open_in_finder(path: String) -> Result<(), AppError> {
         })?;
 
     #[cfg(target_os = "windows")]
-    std::process::Command::new("explorer")
-        .arg("/select,")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| AppError {
-            message: e.to_string(),
-        })?;
+    {
+        use std::os::windows::process::CommandExt;
+        // Explorer needs `/select,"<path>"` as ONE argument; passing it as two arguments
+        // makes it ignore the selection and open the default folder.
+        std::process::Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", path.replace('/', "\\")))
+            .spawn()
+            .map_err(|e| AppError {
+                message: e.to_string(),
+            })?;
+    }
 
     // Linux doesn't have a universal 'reveal file' flag, so we just open the directory
     #[cfg(target_os = "linux")]
@@ -212,6 +218,7 @@ pub fn save_ucs_tag(
     ucs_user_category: String,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
+    ensure_local_sound(id)?;
     let conn = state.db.lock().map_err(|e| AppError { message: e.to_string() })?;
     let cat = if ucs_user_category.is_empty() { None } else { Some(ucs_user_category.as_str()) };
     db::save_ucs_user_category(&conn, id, cat)?;
@@ -240,6 +247,7 @@ pub fn delete_collection(id: i64, state: State<'_, AppState>) -> Result<(), AppE
 
 #[tauri::command]
 pub fn add_to_collection(collection_id: i64, sound_id: i64, state: State<'_, AppState>) -> Result<(), AppError> {
+    ensure_local_sound(sound_id)?;
     let conn = state.db.lock().map_err(|e| AppError { message: e.to_string() })?;
     db::add_to_collection(&conn, collection_id, sound_id)?;
     Ok(())
@@ -326,27 +334,40 @@ pub struct FreesoundResponse {
 
 #[tauri::command]
 pub async fn search_freesound(query: String, api_key: Option<String>) -> Result<Vec<db::Sound>, AppError> {
-    // Use the provided key or fallback to the default one
-    let token = api_key.filter(|k| !k.is_empty())
-        .unwrap_or_else(|| "q47MYc1l0Hyrer1rcjKrxo6Ju0baARMTMgWh4C1O".to_string()); 
-    let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={}&token={}&fields=id,name,duration,previews,tags,username&page_size=150",
-        query, token
-    );
+    let token = api_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())
+        .ok_or_else(|| AppError {
+            message: "Kein Freesound-API-Key hinterlegt. Bitte unter Einstellungen eintragen.".into(),
+        })?;
 
     let client = reqwest::Client::new();
-    let res = client.get(&url)
+    let res = client.get("https://freesound.org/apiv2/search/text/")
+        .query(&[
+            ("query", query.as_str()),
+            ("fields", "id,name,duration,previews,tags,username"),
+            ("page_size", "150"),
+        ])
+        .header("Authorization", format!("Token {}", token))
         .header("User-Agent", "SonicFlow-App")
         .send()
         .await
         .map_err(|e| AppError { message: format!("Request failed: {}", e) })?;
+
+    let status = res.status();
+    if !status.is_success() {
+        let message = match status.as_u16() {
+            401 | 403 => "Freesound hat den API-Key abgelehnt. Bitte Key in den Einstellungen prüfen.".to_string(),
+            429 => "Freesound-Anfragelimit erreicht. Bitte später erneut versuchen.".to_string(),
+            _ => format!("Freesound-Fehler: HTTP {}", status),
+        };
+        return Err(AppError { message });
+    }
 
     let data: FreesoundResponse = res.json()
         .await
         .map_err(|e| AppError { message: format!("JSON parsing failed: {}", e) })?;
 
     let sounds = data.results.into_iter().map(|r| db::Sound {
-        id: r.id,
+        id: -r.id,
         library_id: 0, 
         filename: r.name,
         filepath: r.previews.preview_lq_mp3,
@@ -378,22 +399,45 @@ pub async fn search_freesound(query: String, api_key: Option<String>) -> Result<
     Ok(sounds)
 }
 
+/// Reduces a user-visible name to a safe single path component.
+fn sanitize_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+    if cleaned.is_empty() {
+        "sound".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Returns `<dir>/<stem>.mp3`, or `<stem> (n).mp3` if that already exists.
+fn unique_target_path(dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
+    let mut candidate = dir.join(format!("{}.mp3", stem));
+    let mut n = 1;
+    while candidate.exists() {
+        candidate = dir.join(format!("{} ({}).mp3", stem, n));
+        n += 1;
+    }
+    candidate
+}
+
 #[tauri::command]
 pub async fn download_sound(url: String, filename: String, target_dir: Option<String>) -> Result<String, AppError> {
     let download_dir = if let Some(path) = target_dir.filter(|p| !p.is_empty()) {
         std::path::PathBuf::from(path)
     } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        std::path::Path::new(&home).join("Music").join("SonicFlow_Downloads")
+        db::home_dir().join("Music").join("SonicFlow_Downloads")
     };
-    
-    if !download_dir.exists() {
-        std::fs::create_dir_all(&download_dir).map_err(|e| AppError { message: format!("Folder creation failed: {}", e) })?;
-    }
 
-    let sanitized_name = filename.replace('/', "_").replace('\\', "_");
-    let target_path = download_dir.join(format!("{}.mp3", sanitized_name));
-    
+    std::fs::create_dir_all(&download_dir).map_err(|e| AppError { message: format!("Folder creation failed: {}", e) })?;
+
     let client = reqwest::Client::new();
     let res = client.get(&url)
         .header("User-Agent", "SonicFlow-App")
@@ -401,10 +445,16 @@ pub async fn download_sound(url: String, filename: String, target_dir: Option<St
         .await
         .map_err(|e| AppError { message: format!("Download failed: {}", e) })?;
 
+    if !res.status().is_success() {
+        return Err(AppError { message: format!("Download failed: HTTP {}", res.status()) });
+    }
+
     let bytes = res.bytes()
         .await
         .map_err(|e| AppError { message: format!("Failed to read data: {}", e) })?;
 
+    // Never overwrite an existing file; pick a free name right before writing.
+    let target_path = unique_target_path(&download_dir, &sanitize_filename(&filename));
     std::fs::write(&target_path, bytes)
         .map_err(|e| AppError { message: format!("Save failed: {}", e) })?;
 

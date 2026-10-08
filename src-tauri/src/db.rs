@@ -1,6 +1,5 @@
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Library {
@@ -70,18 +69,42 @@ pub struct FolderNode {
 pub fn open_db() -> Result<Connection> {
     let app_dir = dirs_path();
     std::fs::create_dir_all(&app_dir).ok();
-    let db_path = Path::new(&app_dir).join("audiolookup.db");
+    let db_path = app_dir.join("audiolookup.db");
     let conn = Connection::open(db_path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     Ok(conn)
 }
 
-fn dirs_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!(
-        "{}/Library/Application Support/com.antigravity.audiolookup",
-        home
-    )
+const APP_DIR_NAME: &str = "com.antigravity.audiolookup";
+
+/// User home directory (`HOME` on Unix, `USERPROFILE` on Windows).
+pub fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// Per-user application data directory. The macOS location is unchanged so
+/// existing databases keep working.
+fn dirs_path() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home_dir().join("AppData").join("Roaming"));
+
+    #[cfg(target_os = "macos")]
+    let base = home_dir().join("Library").join("Application Support");
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".local").join("share"));
+
+    base.join(APP_DIR_NAME)
 }
 
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -194,6 +217,12 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         );
     ")?;
 
+    // Foreign keys used to be unenforced, so memberships of deleted sounds may linger.
+    conn.execute(
+        "DELETE FROM collection_sounds WHERE sound_id NOT IN (SELECT id FROM sounds)",
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -218,13 +247,41 @@ pub fn update_library_count(conn: &Connection, library_id: i64, now: &str) -> Re
     Ok(())
 }
 
-pub fn insert_sound(conn: &Connection, s: &Sound) -> Result<()> {
+/// Inserts a scanned sound, or refreshes the scanner-owned columns of the existing row
+/// with the same `filepath`. The row id and `ucs_user_category` are preserved, so manual
+/// tags and collection memberships survive a re-scan.
+pub fn upsert_sound(conn: &Connection, s: &Sound) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO sounds
+        "INSERT INTO sounds
         (library_id, filename, filepath, relative_folder, extension, filesize, duration, samplerate, bitdepth, channels, bitrate,
          tag_title, tag_artist, tag_album, tag_comment, tag_genre, tag_bpm, tag_description, tag_keywords, tag_tracknumber,
          imported_at, ucs_cat_id, ucs_fx_name, ucs_creator_id, ucs_source_id)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
+        ON CONFLICT(filepath) DO UPDATE SET
+            library_id = excluded.library_id,
+            filename = excluded.filename,
+            relative_folder = excluded.relative_folder,
+            extension = excluded.extension,
+            filesize = excluded.filesize,
+            duration = excluded.duration,
+            samplerate = excluded.samplerate,
+            bitdepth = excluded.bitdepth,
+            channels = excluded.channels,
+            bitrate = excluded.bitrate,
+            tag_title = excluded.tag_title,
+            tag_artist = excluded.tag_artist,
+            tag_album = excluded.tag_album,
+            tag_comment = excluded.tag_comment,
+            tag_genre = excluded.tag_genre,
+            tag_bpm = excluded.tag_bpm,
+            tag_description = excluded.tag_description,
+            tag_keywords = excluded.tag_keywords,
+            tag_tracknumber = excluded.tag_tracknumber,
+            imported_at = excluded.imported_at,
+            ucs_cat_id = excluded.ucs_cat_id,
+            ucs_fx_name = excluded.ucs_fx_name,
+            ucs_creator_id = excluded.ucs_creator_id,
+            ucs_source_id = excluded.ucs_source_id",
         params![
             s.library_id, s.filename, s.filepath, s.relative_folder, s.extension, s.filesize,
             s.duration, s.samplerate, s.bitdepth, s.channels, s.bitrate,
@@ -235,6 +292,58 @@ pub fn insert_sound(conn: &Connection, s: &Sound) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/// Atomically syncs a library with a fresh scan: upserts every scanned sound and removes
+/// sounds (and their collection memberships) whose files are no longer present.
+/// Any error rolls the whole sync back.
+pub fn sync_library_sounds(
+    conn: &mut Connection,
+    library_id: i64,
+    sounds: &[Sound],
+    now: &str,
+) -> Result<()> {
+    let tx = conn.transaction()?;
+
+    for sound in sounds {
+        upsert_sound(&tx, sound)?;
+    }
+
+    let scanned: std::collections::HashSet<&str> =
+        sounds.iter().map(|s| s.filepath.as_str()).collect();
+    let stale: Vec<i64> = {
+        let mut stmt = tx.prepare("SELECT id, filepath FROM sounds WHERE library_id = ?1")?;
+        let rows = stmt.query_map(params![library_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut ids = Vec::new();
+        for r in rows {
+            let (id, path) = r?;
+            if !scanned.contains(path.as_str()) {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+    for id in stale {
+        tx.execute("DELETE FROM collection_sounds WHERE sound_id = ?1", params![id])?;
+        tx.execute("DELETE FROM sounds WHERE id = ?1", params![id])?;
+    }
+
+    update_library_count(&tx, library_id, now)?;
+    tx.commit()
+}
+
+/// Removes a library together with its sounds and their collection memberships.
+pub fn remove_library_cascade(conn: &mut Connection, library_id: i64) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM collection_sounds WHERE sound_id IN (SELECT id FROM sounds WHERE library_id = ?1)",
+        params![library_id],
+    )?;
+    delete_sounds_for_library(&tx, library_id)?;
+    delete_library(&tx, library_id)?;
+    tx.commit()
 }
 
 pub fn fetch_libraries(conn: &Connection) -> Result<Vec<Library>> {
@@ -377,11 +486,44 @@ fn insert_into_tree(
     }
 }
 
+/// Escapes `%`, `_` and `\\` so a folder name is matched literally inside a LIKE pattern
+/// (used together with `ESCAPE '\\'`).
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Builds a safe FTS5 MATCH expression: every whitespace-separated word becomes a quoted
+/// prefix term (`"word"*`), so FTS operators and punctuation in user input (`-`, `:`, `(`,
+/// `AND`, `NEAR`, ...) are treated as plain text instead of causing syntax errors.
+/// Returns `None` when the input contains no searchable word.
+fn build_fts_query(input: &str) -> Option<String> {
+    let terms: Vec<String> = input
+        .split_whitespace()
+        .map(|w| w.replace('"', ""))
+        .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
+        .map(|w| format!("\"{}\"*", w))
+        .collect();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" "))
+    }
+}
+
 pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> Result<Vec<Sound>> {
     let trimmed = query.trim();
     let mut conditions: Vec<String> = vec![];
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![];
-    let use_fts = !trimmed.is_empty();
+    let fts_query = build_fts_query(trimmed);
+    let use_fts = fts_query.is_some();
+    let fts_query = fts_query.unwrap_or_default();
 
     if let Some(lib_id) = filters.library_id {
         conditions.push("s.library_id = ?".to_string());
@@ -390,8 +532,8 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
     if let Some(ref folder) = filters.folder {
         if !folder.is_empty() {
             // Match exact folder OR any subfolder under it
-            let prefix = format!("{}/%", folder);
-            conditions.push("(s.relative_folder = ? OR s.relative_folder LIKE ?)".to_string());
+            let prefix = format!("{}/%", escape_like(folder));
+            conditions.push("(s.relative_folder = ? OR s.relative_folder LIKE ? ESCAPE '\\')".to_string());
             params_vec.push(Box::new(folder.clone()));
             params_vec.push(Box::new(prefix));
         } else {
@@ -445,7 +587,6 @@ pub fn query_sounds(conn: &Connection, query: &str, filters: &SearchFilters) -> 
     };
 
     let sql = if use_fts {
-        let fts_query = format!("{}*", trimmed.replace('"', "\"\""));
         params_vec.insert(0, Box::new(fts_query));
         let where_clause = if conditions.is_empty() {
             String::new()
@@ -628,4 +769,98 @@ pub fn save_ucs_user_category(conn: &Connection, id: i64, ucs_user_category: Opt
         params![ucs_user_category, id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fts_query_quotes_every_term() {
+        assert_eq!(build_fts_query("door slam").as_deref(), Some("\"door\"* \"slam\"*"));
+        assert_eq!(build_fts_query("door-slam").as_deref(), Some("\"door-slam\"*"));
+        assert_eq!(build_fts_query("a:b AND (x").as_deref(), Some("\"a:b\"* \"AND\"* \"(x\"*"));
+        assert_eq!(build_fts_query("\"\" - *"), None);
+        assert_eq!(build_fts_query("   "), None);
+    }
+
+    #[test]
+    fn folder_filter_treats_wildcards_literally() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let lib = insert_library(&conn, "l", "/l", "t").unwrap();
+        let mut sounds = Vec::new();
+        for (i, folder) in ["My_Folder", "My_Folder/sub", "MyXFolder", "MyXFolder/sub", "100%"].iter().enumerate() {
+            let mut snd = test_sound(lib, &format!("/l/{}.wav", i));
+            snd.relative_folder = folder.to_string();
+            sounds.push(snd);
+        }
+        sync_library_sounds(&mut conn, lib, &sounds, "t").unwrap();
+        let filters = |f: &str| SearchFilters {
+            library_id: None, folder: Some(f.into()), extension: None, min_duration: None,
+            max_duration: None, samplerate: None, bitdepth: None, channels: None,
+            ucs_cat_id: None, shuffle: None,
+        };
+        assert_eq!(query_sounds(&conn, "", &filters("My_Folder")).unwrap().len(), 2);
+        assert_eq!(query_sounds(&conn, "", &filters("100%")).unwrap().len(), 1);
+    }
+
+    fn test_sound(library_id: i64, path: &str) -> Sound {
+        Sound {
+            id: 0, library_id, filename: path.into(), filepath: path.into(),
+            relative_folder: String::new(), extension: "wav".into(), filesize: 1,
+            duration: None, samplerate: None, bitdepth: None, channels: None, bitrate: None,
+            tag_title: None, tag_artist: None, tag_album: None, tag_comment: None,
+            tag_genre: None, tag_bpm: None, tag_description: None, tag_keywords: None,
+            tag_tracknumber: None, imported_at: "t".into(), ucs_cat_id: None,
+            ucs_fx_name: None, ucs_creator_id: None, ucs_source_id: None,
+            ucs_user_category: None,
+        }
+    }
+
+    #[test]
+    fn rescan_keeps_manual_tags_and_collections() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        init_schema(&conn).unwrap();
+        let lib = insert_library(&conn, "l", "/l", "t").unwrap();
+
+        sync_library_sounds(&mut conn, lib, &[test_sound(lib, "/l/a.wav"), test_sound(lib, "/l/b.wav")], "t").unwrap();
+        let a_id: i64 = conn.query_row("SELECT id FROM sounds WHERE filepath='/l/a.wav'", [], |r| r.get(0)).unwrap();
+        let b_id: i64 = conn.query_row("SELECT id FROM sounds WHERE filepath='/l/b.wav'", [], |r| r.get(0)).unwrap();
+        save_ucs_user_category(&conn, a_id, Some("DOORWood")).unwrap();
+        let col = create_collection(&conn, "c", "t").unwrap();
+        add_to_collection(&conn, col, a_id).unwrap();
+        add_to_collection(&conn, col, b_id).unwrap();
+
+        // b.wav disappeared, a.wav still there
+        sync_library_sounds(&mut conn, lib, &[test_sound(lib, "/l/a.wav")], "t2").unwrap();
+
+        let (id, cat): (i64, Option<String>) = conn
+            .query_row("SELECT id, ucs_user_category FROM sounds WHERE filepath='/l/a.wav'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(id, a_id);
+        assert_eq!(cat.as_deref(), Some("DOORWood"));
+        let members = query_collection_sounds(&conn, col).unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(fetch_collections(&conn).unwrap()[0].count, 1);
+        assert_eq!(fetch_libraries(&conn).unwrap()[0].file_count, 1);
+    }
+
+    #[test]
+    fn failed_sync_rolls_back() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let lib = insert_library(&conn, "l", "/l", "t").unwrap();
+        sync_library_sounds(&mut conn, lib, &[test_sound(lib, "/l/a.wav")], "t").unwrap();
+        // library_id that violates NOT NULL via bad data is hard to craft; use a failing
+        // second row (filename NULL is impossible), so simulate by dropping the table.
+        conn.execute_batch("DROP TABLE collection_sounds").unwrap();
+        let r = sync_library_sounds(&mut conn, lib, &[], "t2");
+        assert!(r.is_err());
+        // connection must still be usable (no dangling transaction) and data intact
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM sounds", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        assert!(conn.transaction().is_ok());
+    }
 }
